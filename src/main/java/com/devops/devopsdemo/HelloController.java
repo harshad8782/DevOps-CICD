@@ -10,5 +10,4 @@ public class HelloController {
     public String hello(){
         return "DevOps CI/CD Pipeline Working!";
     }
-
 }
