@@ -57,7 +57,7 @@ git push
 
 📸 **Git Commit & Push:**
 
-![Git Commit](Output/git_commit.png)
+![Git Commit](screenshots/git_commit.png)
 
 ---
 
@@ -67,7 +67,7 @@ On every push to `main`, the **GitHub Actions CI Pipeline** is triggered automat
 
 📸 **GitHub Actions Pipeline:**
 
-![GitHub Actions](Output/github_actions.png)
+![GitHub Actions](screenshots/github_actions.png)
 
 Pipeline configuration file: `.github/workflows/ci.yml`
 
@@ -79,7 +79,7 @@ After the build succeeds, the Docker image is automatically built and pushed to 
 
 📸 **Docker Hub Repository:**
 
-![Docker Hub](Output/docker_hub_repo.png)
+![Docker Hub](screenshots/docker_hub_repo.png)
 
 ---
 
@@ -93,7 +93,7 @@ docker pull harshad8782/devops-demo:latest
 
 📸 **Image Pulled Locally (Docker Desktop):**
 
-![Pull Image](Output/pull_image_from_docker_hub.png)
+![Pull Image](screenshots/pull_image_from_docker_hub.png)
 
 ---
 
@@ -105,7 +105,7 @@ docker run -p 8081:8080 harshad8782/devops-demo:latest
 
 📸 **Container Running (Docker Desktop):**
 
-![Container Running](Output/container_running.png)
+![Container Running](screenshots/container_running.png)
 
 > Container name: `recursing_noether` | Port: `8081:8080` | CPU: `0.35%`
 
@@ -121,7 +121,7 @@ http://localhost:8081
 
 📸 **Application Live:**
 
-![Browser Output](Output/browser_output.png)
+![Browser Output](screenshots/browser_output.png)
 
 > ✅ **"DevOps CI/CD Pipeline Working!"**
 
