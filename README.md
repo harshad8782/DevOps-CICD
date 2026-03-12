@@ -96,6 +96,10 @@ Jenkins pulls the latest verified image from Docker Hub and deploys the containe
 - ✅ Run New Container
 - ✅ Verify Deployment
 
+📸 **Jenkins Pipeline:**
+
+![Jenkins Pipeline](screenshots/jenkins.png)
+
 ---
 
 ### Step 5 — Pull Image from Docker Hub
@@ -307,15 +311,197 @@ docker pull harshad8782/devops-demo:latest
 
 ---
 
-## 🔮 Future Enhancements
+## 📚 Learning Reference — Full Pipeline Using Only One Tool
 
-- [x] Jenkins CD pipeline integration ✅
-- [x] GitHub Actions CI pipeline ✅
-- [x] Docker Hub image registry ✅
-- [ ] Kubernetes (K8s) deployment with Helm charts
-- [ ] Multi-stage Docker builds for smaller image size
-- [ ] Automated testing in CI pipeline
-- [ ] Monitoring with Prometheus & Grafana
+> This project intentionally separates CI (GitHub Actions) and CD (Jenkins) for learning purposes — to understand the responsibility of each tool clearly. However, the entire pipeline can also be built using either tool alone. Here is how:
+
+---
+
+### 🔵 Full Pipeline Using GitHub Actions Only
+
+If you want a single tool to handle everything — build, push and deploy — GitHub Actions can do it all. This approach is ideal for simplicity, cloud-hosted projects, and small teams.
+```yaml
+name: Full CI/CD Pipeline - GitHub Actions Only
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Build with Maven
+        run: mvn clean package
+
+      - name: Build Docker Image
+        run: docker build -t harshad8782/devops-demo:latest .
+
+      - name: Push to Docker Hub
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          docker push harshad8782/devops-demo:latest
+
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@v0.1.6
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            docker stop devops-app || true
+            docker rm devops-app || true
+            docker pull harshad8782/devops-demo:latest
+            docker run -d \
+              --name devops-app \
+              -p 8080:8080 \
+              --restart unless-stopped \
+              harshad8782/devops-demo:latest
+```
+
+**How it works:**
+```
+git push
+    ↓
+GitHub Actions runner spins up
+    ↓
+Maven build → Docker build → Push to Hub
+    ↓
+SSH into your server
+    ↓
+Pull latest image → Run container ✅
+```
+
+---
+
+### 🟠 Full Pipeline Using Jenkins Only
+
+If you want full control on your own server without GitHub Actions at all, Jenkins can handle every stage from cloning to deploying. This approach is ideal for enterprises, private networks, and teams needing deep customization.
+```groovy
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE = 'harshad8782/devops-demo'
+        IMAGE_TAG = 'latest'
+        CONTAINER_NAME = 'devops-app'
+        APP_PORT = '8081'
+        CONTAINER_PORT = '8080'
+    }
+
+    stages {
+
+        stage('Clone Repository') {
+            steps {
+                echo '📥 Cloning from GitHub...'
+                git branch: 'main',
+                    url: 'https://github.com/harshad8782/DevOps-CICD.git'
+            }
+        }
+
+        stage('Build Maven') {
+            steps {
+                echo '⚙️ Building Maven project...'
+                sh 'chmod +x mvnw'
+                sh './mvnw clean package -DskipTests'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                echo '🐳 Building Docker image...'
+                sh 'docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} .'
+            }
+        }
+
+        stage('Push to Docker Hub') {
+            steps {
+                echo '📤 Pushing to Docker Hub...'
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-credentials',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
+                    sh 'docker push ${DOCKER_IMAGE}:${IMAGE_TAG}'
+                }
+            }
+        }
+
+        stage('Deploy Container') {
+            steps {
+                echo '🚀 Deploying container...'
+                sh 'docker stop ${CONTAINER_NAME} || true'
+                sh 'docker rm ${CONTAINER_NAME} || true'
+                sh '''
+                    docker run -d \
+                        --name ${CONTAINER_NAME} \
+                        -p ${APP_PORT}:${CONTAINER_PORT} \
+                        --restart unless-stopped \
+                        ${DOCKER_IMAGE}:${IMAGE_TAG}
+                '''
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                echo '✅ Verifying deployment...'
+                sh 'sleep 5'
+                sh 'docker ps | grep ${CONTAINER_NAME}'
+                sh 'docker logs ${CONTAINER_NAME} --tail=20'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Full pipeline succeeded! App running at http://localhost:8081'
+        }
+        failure {
+            echo '❌ Pipeline failed! Check logs above for errors.'
+        }
+        always {
+            sh 'docker image prune -f'
+        }
+    }
+}
+```
+
+**How it works:**
+```
+git push → Jenkins webhook triggers
+    ↓
+Clone repo
+    ↓
+Maven build → Docker build
+    ↓
+Push to Docker Hub
+    ↓
+Run container locally ✅
+```
+
+---
+
+### 🔁 Comparison — Which Approach To Use?
+
+| | GitHub Actions Only | Jenkins Only | Actions (CI) + Jenkins (CD) |
+|---|---|---|---|
+| **Setup effort** | Minimal | High | Medium |
+| **Infrastructure** | None needed | Requires server | Requires Jenkins server |
+| **Best for** | Cloud, open source | Enterprise, private | Learning, real-world pattern |
+| **Customization** | Limited | Full control | Best of both worlds |
+| **Cost** | Free for public repos | Free software | Free software |
+| **This project uses** | ✅ CI only | ✅ CD only | ✅ Separated by design |
 
 ---
 
