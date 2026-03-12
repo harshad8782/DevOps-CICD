@@ -511,7 +511,7 @@ Run container locally ✅
 DevOps / Cloud Enthusiast
 
 [![GitHub](https://img.shields.io/badge/GitHub-harshad8782-181717?style=flat&logo=github)](https://github.com/harshad8782)
-
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-Harshad_Raurale-0077B5?style=flat&logo=linkedin)](https://www.linkedin.com/in/harshad-raurale-9a4b4826b/)
 ---
 
 > ⭐ If you found this project helpful, please consider giving it a star!
