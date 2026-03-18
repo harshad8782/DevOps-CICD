@@ -60,6 +60,53 @@ DevOps-CICD/
 
 ---
 
+## 🔍 Automated Log Analysis
+
+`log_analyzer.sh` runs as a dedicated Jenkins pipeline stage after every deployment. It pulls logs directly from the running Docker container, analyzes them against configurable thresholds, writes a `.txt` stats report, and controls the pipeline outcome automatically.
+
+**Integrated with:**
+
+| Tool | Integration |
+|---|---|
+| **Docker** | Pulls logs directly from running container via `docker logs` |
+| **Jenkins** | Exit codes control pipeline pass / unstable / fail |
+| **GitHub** | Auto-creates labeled issues when critical errors found |
+| **Email** | Sends HTML alert with `.txt` stats report attached |
+
+**How it works:**
+```
+Container starts
+      ↓
+log_analyzer.sh fetches last 500 lines from docker logs
+      ↓
+Scans for ERROR, FATAL, CRITICAL, EXCEPTION  → threshold: 5
+Scans for WARN, WARNING, DEPRECATED          → threshold: 10
+      ↓
+      ├── All clean      → exit 0 → ✅ Jenkins SUCCESS  → email + stats.txt attached
+      ├── Warnings only  → exit 2 → 🟡 Jenkins UNSTABLE → email + stats.txt attached
+      └── Critical found → exit 3 → 🔴 Jenkins FAILURE  → deployment blocked
+                                                         → email + stats.txt attached
+                                                         → GitHub issue auto-created
+```
+
+**Pipeline decision table:**
+
+| Result | Exit Code | Jenkins Status | Action Taken |
+|---|---|---|---|
+| No issues found | 0 | ✅ SUCCESS | Deployment proceeds, email + report sent |
+| Warnings > threshold | 2 | 🟡 UNSTABLE | Deploy allowed, team emailed with report |
+| Critical errors > threshold | 3 | 🔴 FAILURE | Deployment blocked, GitHub issue created |
+
+📸 **Stats Report Attached to Email:**
+
+![Stats Report](screenshots/attachment.png)
+
+📸 **Critical Failure Email — Deployment Blocked:**
+
+![Fail Email](screenshots/fail_mail.png)
+
+---
+
 ## ⚙️ CI/CD Pipeline Workflow
 
 ### Step 1 — Code Commit & Push
@@ -101,7 +148,7 @@ After the build succeeds, the Docker image is automatically pushed to **Docker H
 
 ### Step 4 — Jenkins CD Pipeline Triggered
 
-Jenkins clones the repository, pulls the latest verified image from Docker Hub, deploys the container, runs log analysis, and sends an email notification.
+Jenkins clones the repository, pulls the latest verified image from Docker Hub, deploys the container, runs log analysis, and sends an email notification with the stats report attached.
 
 **Jenkins Pipeline Stages:**
 - ✅ Clone Repository
@@ -109,7 +156,7 @@ Jenkins clones the repository, pulls the latest verified image from Docker Hub, 
 - ✅ Run Container
 - ✅ Log Analysis
 - ✅ Verify Deployment
-- ✅ Email Notification
+- ✅ Email Notification with Stats Report Attached
 
 📸 **Jenkins Pipeline — All Stages Green:**
 
@@ -119,25 +166,58 @@ Jenkins clones the repository, pulls the latest verified image from Docker Hub, 
 
 ### Step 5 — Log Analysis Runs Automatically
 
-After the container starts, `log_analyzer.sh` pulls logs directly from the running Docker container and analyzes them for errors and warnings.
+After the container starts, `log_analyzer.sh` pulls logs directly from the running Docker container, analyzes them, writes a timestamped `.txt` stats report, and exits with a code that controls the pipeline outcome.
 
-**Pipeline is controlled by exit codes:**
+**Sample stats report contents:**
+```
+====================================================
+  LOG ANALYSIS STATS REPORT
+====================================================
+Generated     : 2026-03-18 11:03:17
+Container     : devops-app
+Jenkins Job   : DevOps-CD
+Build Number  : #21
+Lines Scanned : 500
+====================================================
 
-| Result | Exit Code | Jenkins Status | Action Taken |
-|---|---|---|---|
-| No issues found | 0 | ✅ SUCCESS | Deployment proceeds |
-| Warnings > threshold | 2 | 🟡 UNSTABLE | Deploy allowed, team emailed |
-| Critical errors > threshold | 3 | 🔴 FAILURE | Deployment blocked, GitHub issue created |
+--------------------------------------------------
+  CRITICAL ERROR PATTERNS  (threshold: 5)
+--------------------------------------------------
+  ERROR     : 0 occurrences
+  FATAL     : 0 occurrences
+  CRITICAL  : 0 occurrences
+  EXCEPTION : 0 occurrences
+
+--------------------------------------------------
+  WARNING PATTERNS  (threshold: 10)
+--------------------------------------------------
+  WARN       : 0 occurrences
+  WARNING    : 0 occurrences
+  DEPRECATED : 0 occurrences
+
+====================================================
+  PIPELINE DECISION SUMMARY
+====================================================
+Status          : PASSED
+Critical Issues : 0 pattern(s) exceeded threshold
+Warnings        : 0 pattern(s) exceeded threshold
+Action          : All checks passed. Deployment is proceeding.
+====================================================
+```
 
 ---
 
-### Step 6 — Email Notification Sent
+### Step 6 — Email Notification with Stats Report
 
-On every pipeline run, an email is automatically sent to the DevOps team with the result, build details, and a link to Jenkins.
+On every pipeline run, an email is automatically sent to the DevOps team with the result, build details, and the full `.txt` stats report attached.
 
-📸 **Email Alert Received:**
+📸 **Success Email with Stats Attachment:**
 
 ![Email Alert](screenshots/mail.png)
+
+📸 **Critical Failure Email — Deployment Blocked:**
+
+![Fail Email](screenshots/fail_mail.png)
 
 ---
 
@@ -211,9 +291,7 @@ pipeline {
         CONTAINER_NAME = 'devops-app'
         APP_PORT       = '8081'
         CONTAINER_PORT = '8080'
-        REPORT_DIR     = "${WORKSPACE}/reports"
         ALERT_EMAIL    = 'harshadraurale29@gmail.com'
-        FROM_EMAIL     = 'harshadraurale29@gmail.com'
         GITHUB_TOKEN   = credentials('github-token')
         GITHUB_REPO    = 'harshad8782/DevOps-CICD'
     }
@@ -255,15 +333,17 @@ pipeline {
             steps {
                 echo '🔍 Running log analysis on container...'
                 sh 'chmod +x log_analyzer.sh'
-                sh '''
-                    CONTAINER_NAME=${CONTAINER_NAME} \
-                    REPORT_DIR=${REPORT_DIR} \
-                    ALERT_EMAIL=${ALERT_EMAIL} \
-                    FROM_EMAIL=${FROM_EMAIL} \
-                    GITHUB_TOKEN=${GITHUB_TOKEN} \
-                    GITHUB_REPO=${GITHUB_REPO} \
+                sh """
+                    export CONTAINER_NAME=${CONTAINER_NAME}
+                    export ALERT_EMAIL=${ALERT_EMAIL}
+                    export GITHUB_TOKEN=${GITHUB_TOKEN}
+                    export GITHUB_REPO=${GITHUB_REPO}
+                    export WORKSPACE=${WORKSPACE}
+                    export BUILD_URL=${BUILD_URL}
+                    export JOB_NAME=${JOB_NAME}
+                    export BUILD_NUMBER=${BUILD_NUMBER}
                     ./log_analyzer.sh
-                '''
+                """
             }
         }
 
@@ -273,6 +353,7 @@ pipeline {
                 sh 'sleep 5'
                 sh 'docker ps | grep ${CONTAINER_NAME}'
                 sh 'docker logs ${CONTAINER_NAME} --tail=20'
+                sh 'ls -lh ${WORKSPACE}/reports/ || echo "No reports directory found"'
             }
         }
     }
@@ -297,13 +378,21 @@ pipeline {
                         <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
                     </table>
                     <p>✅ Log analysis passed. Deployment is live.</p>
+                    <p>See attached stats report for full analysis details.</p>
                 """,
                 to: "${ALERT_EMAIL}",
-                mimeType: 'text/html'
+                mimeType: 'text/html',
+                attachmentsPattern: '**/reports/log_stats_*.txt'
             )
         }
 
         unstable {
+            echo '''
+            🟡 ================================
+               PIPELINE UNSTABLE!
+               Warnings found — check email.
+            ================================
+            '''
             emailext(
                 subject: "🟡 [WARNING] Pipeline Unstable — ${JOB_NAME} #${BUILD_NUMBER}",
                 body: """
@@ -315,9 +404,11 @@ pipeline {
                         <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
                     </table>
                     <p>🟡 Warning patterns exceeded threshold. Deployment allowed but review needed.</p>
+                    <p>See attached stats report for full details.</p>
                 """,
                 to: "${ALERT_EMAIL}",
-                mimeType: 'text/html'
+                mimeType: 'text/html',
+                attachmentsPattern: '**/reports/log_stats_*.txt'
             )
         }
 
@@ -339,10 +430,12 @@ pipeline {
                         <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
                     </table>
                     <p>🔴 Critical errors found. Deployment has been blocked.</p>
-                    <p>Fix errors and re-trigger the pipeline.</p>
+                    <p>A GitHub issue has been auto-created. Fix errors and re-trigger pipeline.</p>
+                    <p>See attached stats report for full details.</p>
                 """,
                 to: "${ALERT_EMAIL}",
-                mimeType: 'text/html'
+                mimeType: 'text/html',
+                attachmentsPattern: '**/reports/log_stats_*.txt'
             )
         }
 
@@ -352,37 +445,6 @@ pipeline {
         }
     }
 }
-```
-
----
-
-## 🔍 Automated Log Analysis
-
-`log_analyzer.sh` runs as a dedicated Jenkins pipeline stage after every deployment. It pulls logs directly from the running Docker container, analyzes them against configurable thresholds, and controls the pipeline outcome automatically.
-
-**Integrated with:**
-
-| Tool | Integration |
-|---|---|
-| **Docker** | Pulls logs directly from running container via `docker logs` |
-| **Jenkins** | Exit codes control pipeline pass / unstable / fail |
-| **GitHub** | Auto-creates labeled issues when critical errors found |
-| **Email** | Sends HTML alert with build details to DevOps team |
-
-**How it works:**
-```
-Container starts
-      ↓
-log_analyzer.sh fetches last 500 lines from docker logs
-      ↓
-Scans for ERROR, FATAL, CRITICAL, EXCEPTION  → threshold: 5
-Scans for WARN, WARNING, DEPRECATED          → threshold: 10
-      ↓
-      ├── All clean      → exit 0 → ✅ Jenkins SUCCESS → email sent
-      ├── Warnings only  → exit 2 → 🟡 Jenkins UNSTABLE → email sent
-      └── Critical found → exit 3 → 🔴 Jenkins FAILURE  → blocked
-                                                         → email sent
-                                                         → GitHub issue created
 ```
 
 ---
@@ -493,7 +555,7 @@ docker rm devops-app
 docker run -d \
     --name devops-app \
     -p 8080:8080 \
-    harshad8782/devops-demo:v1.4.1    # ← previous stable tag
+    harshad8782/devops-demo:v1.4.1
 ```
 
 ---
