@@ -97,6 +97,10 @@ Scans for WARN, WARNING, DEPRECATED          → threshold: 10
 | Warnings > threshold | 2 | 🟡 UNSTABLE | Deploy allowed, team emailed with report |
 | Critical errors > threshold | 3 | 🔴 FAILURE | Deployment blocked, GitHub issue created |
 
+📸 **Email Received:**
+
+![mail](screenshots/mail.png)
+
 📸 **Stats Report Attached to Email:**
 
 ![Stats Report](screenshots/attachment.png)
