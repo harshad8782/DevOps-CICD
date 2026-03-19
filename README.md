@@ -355,26 +355,51 @@ pipeline {
         stage('Log Analysis') {
             steps {
                 echo '🔍 Running log analysis on container...'
-                sh 'chmod +x log_analyzer.sh'
-                sh """
-                    export CONTAINER_NAME=${CONTAINER_NAME}
-                    export ALERT_EMAIL=${ALERT_EMAIL}
-                    export WORKSPACE=${WORKSPACE}
-                    export BUILD_URL=${BUILD_URL}
-                    export JOB_NAME=${JOB_NAME}
-                    export BUILD_NUMBER=${BUILD_NUMBER}
-                    ./log_analyzer.sh
-                """
+                script {
+                    if (isUnix()) {
+                        echo '🐧 Linux agent detected — running log_analyzer.sh'
+                        sh 'chmod +x log_analyzer.sh'
+                        sh """
+                            export CONTAINER_NAME=${CONTAINER_NAME}
+                            export ALERT_EMAIL=${ALERT_EMAIL}
+                            export WORKSPACE=${WORKSPACE}
+                            export BUILD_URL=${BUILD_URL}
+                            export JOB_NAME=${JOB_NAME}
+                            export BUILD_NUMBER=${BUILD_NUMBER}
+                            ./log_analyzer.sh
+                        """
+                    } else {
+                        echo '🪟 Windows agent detected — running log_analyzer.ps1'
+                        powershell """
+                            \$env:CONTAINER_NAME  = '${CONTAINER_NAME}'
+                            \$env:ALERT_EMAIL     = '${ALERT_EMAIL}'
+                            \$env:WORKSPACE       = '${WORKSPACE}'
+                            \$env:BUILD_URL       = '${BUILD_URL}'
+                            \$env:JOB_NAME        = '${JOB_NAME}'
+                            \$env:BUILD_NUMBER    = '${BUILD_NUMBER}'
+                            .\\log_analyzer.ps1
+                        """
+                    }
+                }
             }
         }
 
         stage('Verify Deployment') {
             steps {
                 echo '✅ Verifying deployment...'
-                sh 'sleep 5'
-                sh 'docker ps | grep ${CONTAINER_NAME}'
-                sh 'docker logs ${CONTAINER_NAME} --tail=20'
-                sh 'ls -lh ${WORKSPACE}/reports/ || echo "No reports directory found"'
+                script {
+                    if (isUnix()) {
+                        sh 'sleep 5'
+                        sh 'docker ps | grep ${CONTAINER_NAME}'
+                        sh 'docker logs ${CONTAINER_NAME} --tail=20'
+                        sh 'ls -lh ${WORKSPACE}/reports/ || echo "No reports directory found"'
+                    } else {
+                        powershell 'Start-Sleep -Seconds 5'
+                        powershell 'docker ps | Select-String "${env:CONTAINER_NAME}"'
+                        powershell 'docker logs ${env:CONTAINER_NAME} --tail 20'
+                        powershell 'Get-ChildItem "${env:WORKSPACE}\\reports" -ErrorAction SilentlyContinue | Format-List'
+                    }
+                }
             }
         }
     }
@@ -461,28 +486,23 @@ pipeline {
         }
 
         always {
-            echo '🧹 Cleaning up unused Docker images...'
-            sh 'docker image prune -f'
+            script {
+                if (isUnix()) {
+                    sh 'docker image prune -f'
+                } else {
+                    powershell 'docker image prune -f'
+                }
+            }
         }
     }
 }
 ```
 
-> **Windows Agent?** Replace the Log Analysis stage `sh` steps with `powershell` and run `log_analyzer.ps1` instead:
-> ```groovy
-> stage('Log Analysis') {
->     steps {
->         powershell """
->             \$env:CONTAINER_NAME  = '${CONTAINER_NAME}'
->             \$env:ALERT_EMAIL     = '${ALERT_EMAIL}'
->             \$env:WORKSPACE       = '${WORKSPACE}'
->             \$env:BUILD_URL       = '${BUILD_URL}'
->             \$env:JOB_NAME        = '${JOB_NAME}'
->             \$env:BUILD_NUMBER    = '${BUILD_NUMBER}'
->             .\\log_analyzer.ps1
->         """
->     }
-> }
+> **Cross-Platform Support** — The pipeline uses `isUnix()` to automatically detect the Jenkins agent OS at runtime and run the correct script. No manual changes needed when switching between Linux and Windows agents.
+>
+> ```
+> Linux / Mac agent  →  isUnix() = true  →  runs log_analyzer.sh
+> Windows agent      →  isUnix() = false →  runs log_analyzer.ps1
 > ```
 
 ---
@@ -600,52 +620,6 @@ Developer pushes code
     Canary 5% → Monitor → Scale 25% → 50% → 100%
         ↓
     ✅ Full rollout + Continuous monitoring
-```
-
----
-
-## 📚 Learning Reference — Full Pipeline Using Only One Tool
-
-### 🔵 Full Pipeline Using GitHub Actions Only
-```yaml
-name: Full CI/CD Pipeline - GitHub Actions Only
-
-on:
-  push:
-    branches: [ main ]
-
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - uses: actions/setup-java@v3
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Build with Maven
-        run: mvn clean package
-
-      - name: Build and Push Docker Image
-        run: |
-          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-          docker build -t harshad8782/devops-demo:latest .
-          docker push harshad8782/devops-demo:latest
-
-      - name: Deploy to Server via SSH
-        uses: appleboy/ssh-action@v0.1.6
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ubuntu
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            docker stop devops-app || true
-            docker rm devops-app || true
-            docker pull harshad8782/devops-demo:latest
-            docker run -d --name devops-app -p 8080:8080 \
-              --restart unless-stopped harshad8782/devops-demo:latest
 ```
 
 ---
