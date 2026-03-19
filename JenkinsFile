@@ -1,0 +1,197 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_IMAGE   = 'harshad8782/devops-demo:latest'
+        CONTAINER_NAME = 'devops-app'
+        APP_PORT       = '8081'
+        CONTAINER_PORT = '8080'
+        ALERT_EMAIL    = 'harshadraurale29@gmail.com'
+    }
+
+    stages {
+
+        stage('Clone Repository') {
+            steps {
+                echo '📥 Cloning repository...'
+                git branch: 'main',
+                    url: 'https://github.com/harshad8782/DevOps-CICD.git'
+            }
+        }
+
+        stage('Pull Image') {
+            steps {
+                echo '📥 Pulling latest image from Docker Hub...'
+                sh 'docker pull ${DOCKER_IMAGE}'
+            }
+        }
+
+        stage('Run Container') {
+            steps {
+                echo '🚀 Deploying container...'
+                sh 'docker stop ${CONTAINER_NAME} || true'
+                sh 'docker rm ${CONTAINER_NAME} || true'
+                sh '''
+                    docker run -d \
+                        --name ${CONTAINER_NAME} \
+                        -p ${APP_PORT}:${CONTAINER_PORT} \
+                        --restart unless-stopped \
+                        ${DOCKER_IMAGE}
+                '''
+                sh 'sleep 10'
+            }
+        }
+
+        stage('Log Analysis') {
+            steps {
+                echo '🔍 Running log analysis on container...'
+                script {
+                    // Detect OS and run appropriate script
+                    if (isUnix()) {
+                        echo '🐧 Linux agent detected — running log_analyzer.sh'
+                        sh 'chmod +x log_analyzer.sh'
+                        sh """
+                            export CONTAINER_NAME=${CONTAINER_NAME}
+                            export ALERT_EMAIL=${ALERT_EMAIL}
+                            export WORKSPACE=${WORKSPACE}
+                            export BUILD_URL=${BUILD_URL}
+                            export JOB_NAME=${JOB_NAME}
+                            export BUILD_NUMBER=${BUILD_NUMBER}
+                            ./log_analyzer.sh
+                        """
+                    } else {
+                        echo '🪟 Windows agent detected — running log_analyzer.ps1'
+                        powershell """
+                            \$env:CONTAINER_NAME  = '${CONTAINER_NAME}'
+                            \$env:ALERT_EMAIL     = '${ALERT_EMAIL}'
+                            \$env:WORKSPACE       = '${WORKSPACE}'
+                            \$env:BUILD_URL       = '${BUILD_URL}'
+                            \$env:JOB_NAME        = '${JOB_NAME}'
+                            \$env:BUILD_NUMBER    = '${BUILD_NUMBER}'
+                            .\\log_analyzer.ps1
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Verify Deployment') {
+            steps {
+                echo '✅ Verifying deployment...'
+                script {
+                    if (isUnix()) {
+                        sh 'sleep 5'
+                        sh 'docker ps | grep ${CONTAINER_NAME}'
+                        sh 'docker logs ${CONTAINER_NAME} --tail=20'
+                        sh 'ls -lh ${WORKSPACE}/reports/ || echo "No reports directory found"'
+                    } else {
+                        powershell 'Start-Sleep -Seconds 5'
+                        powershell 'docker ps | Select-String "${env:CONTAINER_NAME}"'
+                        powershell 'docker logs ${env:CONTAINER_NAME} --tail 20'
+                        powershell 'Get-ChildItem "${env:WORKSPACE}\\reports" -ErrorAction SilentlyContinue | Format-List'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '''
+            ✅ ================================
+               PIPELINE SUCCEEDED!
+               App running at: http://localhost:8081
+            ================================
+            '''
+            emailext(
+                subject: "✅ [SUCCESS] Pipeline Passed — ${JOB_NAME} #${BUILD_NUMBER}",
+                body: """
+                    <h2>✅ Pipeline Succeeded</h2>
+                    <table>
+                        <tr><td><b>Job</b></td><td>${JOB_NAME}</td></tr>
+                        <tr><td><b>Build</b></td><td>#${BUILD_NUMBER}</td></tr>
+                        <tr><td><b>Container</b></td><td>${CONTAINER_NAME}</td></tr>
+                        <tr><td><b>App URL</b></td><td>http://localhost:${APP_PORT}</td></tr>
+                        <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
+                    </table>
+                    <p>✅ Log analysis passed. Deployment is live.</p>
+                    <p>See attached stats report for full analysis details.</p>
+                """,
+                to: "${ALERT_EMAIL}",
+                mimeType: 'text/html',
+                attachmentsPattern: '**/reports/log_stats_*.txt'
+            )
+        }
+
+        unstable {
+            echo '''
+            🟡 ================================
+               PIPELINE UNSTABLE!
+               Warnings found — check email.
+            ================================
+            '''
+            emailext(
+                subject: "🟡 [WARNING] Pipeline Unstable — ${JOB_NAME} #${BUILD_NUMBER}",
+                body: """
+                    <h2>🟡 Pipeline Unstable — Warnings Found</h2>
+                    <table>
+                        <tr><td><b>Job</b></td><td>${JOB_NAME}</td></tr>
+                        <tr><td><b>Build</b></td><td>#${BUILD_NUMBER}</td></tr>
+                        <tr><td><b>Container</b></td><td>${CONTAINER_NAME}</td></tr>
+                        <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
+                    </table>
+                    <p>🟡 Warning patterns exceeded threshold. Deployment allowed but review needed.</p>
+                    <p>See attached stats report for full details.</p>
+                """,
+                to: "${ALERT_EMAIL}",
+                mimeType: 'text/html',
+                attachmentsPattern: '**/reports/log_stats_*.txt'
+            )
+        }
+
+        failure {
+            echo '''
+            ❌ ================================
+               PIPELINE FAILED!
+               Check logs above for errors.
+            ================================
+            '''
+            emailext(
+                subject: "🔴 [CRITICAL] Pipeline FAILED — ${JOB_NAME} #${BUILD_NUMBER}",
+                body: """
+                    <h2>🔴 Pipeline Failed — Deployment Blocked</h2>
+                    <table>
+                        <tr><td><b>Job</b></td><td>${JOB_NAME}</td></tr>
+                        <tr><td><b>Build</b></td><td>#${BUILD_NUMBER}</td></tr>
+                        <tr><td><b>Container</b></td><td>${CONTAINER_NAME}</td></tr>
+                        <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
+                    </table>
+                    <p>🔴 Critical errors found. Deployment has been blocked.</p>
+                    <p>Fix errors and re-trigger the pipeline.</p>
+                    <p>See attached stats report for full details.</p>
+                """,
+                to: "${ALERT_EMAIL}",
+                mimeType: 'text/html',
+                attachmentsPattern: '**/reports/log_stats_*.txt'
+            )
+        }
+
+        always {
+            script {
+                if (isUnix()) {
+                    sh 'docker image prune -f'
+                } else {
+                    powershell 'docker image prune -f'
+                }
+            }
+        }
+    }
+}
+```
+
+---
+
+## How `isUnix()` Works
+```
+Jenkins agent is Linux/Mac  →  isUnix() = true  →  runs log_analyzer.sh
+Jenkins agent is Windows    →  isUnix() = false →  runs log_analyzer.ps1
