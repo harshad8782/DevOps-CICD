@@ -15,7 +15,7 @@ Developer → GitHub Push → GitHub Actions (CI) → Maven Build → Docker Ima
                                                                           Log Analysis
                                                                                     ↓
                                                                ✅ Pass → Verify & Alert Email
-                                                               🔴 Fail → Block + Email + GitHub Issue
+                                                               🔴 Fail → Block + Email + Stats Report
 ```
 
 ---
@@ -32,7 +32,8 @@ Developer → GitHub Push → GitHub Actions (CI) → Maven Build → Docker Ima
 | Jenkins | CD pipeline (local/self-hosted) |
 | Docker Hub | Image registry |
 | Git | Version control |
-| Bash Scripting | Log analysis & DevOps automation |
+| Bash Scripting | Log analysis & DevOps automation (Linux) |
+| PowerShell | Log analysis & DevOps automation (Windows) |
 | Email (SMTP) | Pipeline alert notifications |
 
 ---
@@ -48,7 +49,8 @@ DevOps-CICD/
 │               └── HelloController.java
 ├── Dockerfile
 ├── Jenkinsfile
-├── log_analyzer.sh
+├── log_analyzer.sh          ← Linux/Mac agent
+├── log_analyzer.ps1         ← Windows agent
 ├── pom.xml
 ├── mvnw
 ├── mvnw.cmd
@@ -62,22 +64,25 @@ DevOps-CICD/
 
 ## 🔍 Automated Log Analysis
 
-`log_analyzer.sh` runs as a dedicated Jenkins pipeline stage after every deployment. It pulls logs directly from the running Docker container, analyzes them against configurable thresholds, writes a `.txt` stats report, and controls the pipeline outcome automatically.
+Two versions of the log analyzer are included — `log_analyzer.sh` for Linux/Mac Jenkins agents and `log_analyzer.ps1` for Windows Jenkins agents. Both scripts do exactly the same job, just written in their respective scripting languages. The Jenkins pipeline **automatically detects the OS** using `isUnix()` and runs the correct script without any manual changes.
 
 **Integrated with:**
 
 | Tool | Integration |
 |---|---|
 | **Docker** | Pulls logs directly from running container via `docker logs` |
-| **Jenkins** | Exit codes control pipeline pass / unstable / fail |
-| **GitHub** | Auto-creates labeled issues when critical errors found |
+| **Jenkins** | `isUnix()` detects OS and runs `.sh` or `.ps1` automatically |
 | **Email** | Sends HTML alert with `.txt` stats report attached |
 
 **How it works:**
 ```
 Container starts
       ↓
-log_analyzer.sh fetches last 500 lines from docker logs
+Jenkins detects OS using isUnix()
+      ├── Linux/Mac → log_analyzer.sh
+      └── Windows   → log_analyzer.ps1
+      ↓
+Fetches last 500 lines from docker logs
       ↓
 Scans for ERROR, FATAL, CRITICAL, EXCEPTION  → threshold: 5
 Scans for WARN, WARNING, DEPRECATED          → threshold: 10
@@ -86,7 +91,6 @@ Scans for WARN, WARNING, DEPRECATED          → threshold: 10
       ├── Warnings only  → exit 2 → 🟡 Jenkins UNSTABLE → email + stats.txt attached
       └── Critical found → exit 3 → 🔴 Jenkins FAILURE  → deployment blocked
                                                          → email + stats.txt attached
-                                                         → GitHub issue auto-created
 ```
 
 **Pipeline decision table:**
@@ -95,11 +99,37 @@ Scans for WARN, WARNING, DEPRECATED          → threshold: 10
 |---|---|---|---|
 | No issues found | 0 | ✅ SUCCESS | Deployment proceeds, email + report sent |
 | Warnings > threshold | 2 | 🟡 UNSTABLE | Deploy allowed, team emailed with report |
-| Critical errors > threshold | 3 | 🔴 FAILURE | Deployment blocked, GitHub issue created |
+| Critical errors > threshold | 3 | 🔴 FAILURE | Deployment blocked, team emailed with report |
 
-📸 **Email Received:**
+**Bash vs PowerShell — same logic, different platform:**
 
-![mail](screenshots/mail.png)
+| Concept | Bash (`log_analyzer.sh`) | PowerShell (`log_analyzer.ps1`) |
+|---|---|---|
+| Variable | `VAR="value"` | `$VAR = "value"` |
+| Environment var | `${VAR:-default}` | `if ($env:VAR) { $env:VAR }` |
+| Function | `myFunc() { }` | `function My-Func { }` |
+| Pattern match | `grep -i -c "pattern"` | `Select-String -Pattern "pattern"` |
+| Write file | `echo "text" >> file` | `"text" \| Out-File -Append` |
+| Send email | `mail -s "subject"` | `Send-MailMessage` |
+| HTTP request | `curl -X POST` | `Invoke-RestMethod -Method POST` |
+| Exit code | `exit 3` | `exit 3` |
+
+**Jenkins auto-selects the script at runtime:**
+```groovy
+script {
+    if (isUnix()) {
+        // Linux/Mac agent
+        sh './log_analyzer.sh'
+    } else {
+        // Windows agent
+        powershell '.\\log_analyzer.ps1'
+    }
+}
+```
+
+📸 **Success Email Received:**
+
+![Email Alert](screenshots/mail.png)
 
 📸 **Stats Report Attached to Email:**
 
@@ -136,8 +166,6 @@ On every push to `main`, the **GitHub Actions CI Pipeline** triggers automatical
 
 ![GitHub Actions](screenshots/github_actions.png)
 
-Pipeline configuration file: `.github/workflows/ci.yml`
-
 ---
 
 ### Step 3 — Docker Image Pushed to Docker Hub
@@ -158,7 +186,7 @@ Jenkins clones the repository, pulls the latest verified image from Docker Hub, 
 - ✅ Clone Repository
 - ✅ Pull Image from Docker Hub
 - ✅ Run Container
-- ✅ Log Analysis
+- ✅ Log Analysis (Bash or PowerShell)
 - ✅ Verify Deployment
 - ✅ Email Notification with Stats Report Attached
 
@@ -170,9 +198,9 @@ Jenkins clones the repository, pulls the latest verified image from Docker Hub, 
 
 ### Step 5 — Log Analysis Runs Automatically
 
-After the container starts, `log_analyzer.sh` pulls logs directly from the running Docker container, analyzes them, writes a timestamped `.txt` stats report, and exits with a code that controls the pipeline outcome.
+After the container starts, the log analyzer script pulls logs directly from the running Docker container, analyzes them, writes a timestamped `.txt` stats report, and exits with a code that controls the pipeline outcome.
 
-**Sample stats report contents:**
+**Sample stats report:**
 ```
 ====================================================
   LOG ANALYSIS STATS REPORT
@@ -213,21 +241,11 @@ Action          : All checks passed. Deployment is proceeding.
 
 ### Step 6 — Email Notification with Stats Report
 
-On every pipeline run, an email is automatically sent to the DevOps team with the result, build details, and the full `.txt` stats report attached.
-
-📸 **Success Email with Stats Attachment:**
-
-![Email Alert](screenshots/mail.png)
-
-📸 **Critical Failure Email — Deployment Blocked:**
-
-![Fail Email](screenshots/fail_mail.png)
+On every pipeline run, an email is automatically sent with the result, build details, and full `.txt` stats report attached.
 
 ---
 
 ### Step 7 — Application Live in Browser
-
-Access the running application at:
 ```
 http://localhost:8081
 ```
@@ -296,8 +314,6 @@ pipeline {
         APP_PORT       = '8081'
         CONTAINER_PORT = '8080'
         ALERT_EMAIL    = 'harshadraurale29@gmail.com'
-        GITHUB_TOKEN   = credentials('github-token')
-        GITHUB_REPO    = 'harshad8782/DevOps-CICD'
     }
 
     stages {
@@ -340,8 +356,6 @@ pipeline {
                 sh """
                     export CONTAINER_NAME=${CONTAINER_NAME}
                     export ALERT_EMAIL=${ALERT_EMAIL}
-                    export GITHUB_TOKEN=${GITHUB_TOKEN}
-                    export GITHUB_REPO=${GITHUB_REPO}
                     export WORKSPACE=${WORKSPACE}
                     export BUILD_URL=${BUILD_URL}
                     export JOB_NAME=${JOB_NAME}
@@ -434,7 +448,7 @@ pipeline {
                         <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
                     </table>
                     <p>🔴 Critical errors found. Deployment has been blocked.</p>
-                    <p>A GitHub issue has been auto-created. Fix errors and re-trigger pipeline.</p>
+                    <p>Fix errors and re-trigger the pipeline.</p>
                     <p>See attached stats report for full details.</p>
                 """,
                 to: "${ALERT_EMAIL}",
@@ -450,6 +464,23 @@ pipeline {
     }
 }
 ```
+
+> **Windows Agent?** Replace the Log Analysis stage `sh` steps with `powershell` and run `log_analyzer.ps1` instead:
+> ```groovy
+> stage('Log Analysis') {
+>     steps {
+>         powershell """
+>             \$env:CONTAINER_NAME  = '${CONTAINER_NAME}'
+>             \$env:ALERT_EMAIL     = '${ALERT_EMAIL}'
+>             \$env:WORKSPACE       = '${WORKSPACE}'
+>             \$env:BUILD_URL       = '${BUILD_URL}'
+>             \$env:JOB_NAME        = '${JOB_NAME}'
+>             \$env:BUILD_NUMBER    = '${BUILD_NUMBER}'
+>             .\\log_analyzer.ps1
+>         """
+>     }
+> }
+> ```
 
 ---
 
@@ -473,8 +504,6 @@ pipeline {
 ---
 
 ### 🔵 Production CI — Continuous Integration
-
-In production, CI is not just about building and pushing. Every commit goes through multiple quality gates before it is allowed to become a release candidate.
 ```
 Code Push
     ↓
@@ -497,43 +526,22 @@ Push to Registry    → Docker Hub / AWS ECR
 Release Candidate Ready ✅
 ```
 
-**Key difference from this project:**
-- Every image is **versioned** (`v1.4.2`) not just `latest`
-- Build is **rejected** automatically if tests fail, coverage drops, or vulnerabilities are found
-- No human intervention needed — the pipeline decides if the build is release-worthy
-
 ---
 
 ### 🟠 Production CD — Continuous Delivery with Canary Deployment
-
-In production, you never release directly to all users. A **Canary Deployment** strategy is used — the new version is released to a small percentage of users first, monitored, and then gradually rolled out to everyone only if it is stable.
 ```
 Release Candidate (v1.4.2) approved by CI
     ↓
 Deploy to Staging Environment
     ↓
-Smoke Tests on Staging          → is the app even starting correctly?
+Smoke Tests on Staging
     ↓
 Canary Release — 5% of users get v1.4.2
     ↓
 Monitor for 15–30 minutes
-    ├── Error rate normal?
-    ├── Response time normal?
-    └── No crashes or exceptions?
-         ↓ YES                        ↓ NO
-    Roll out to 25% users        🔴 Automatic Rollback to v1.4.1
-         ↓
-    Roll out to 50% users
-         ↓
-    Roll out to 100% users ✅
-         ↓
-    Monitor production continuously
+    ├── OK  ──→ Roll out to 25% → 50% → 100% ✅
+    └── ERR ──→ 🔴 Auto Rollback to v1.4.1
 ```
-
-**Why this matters:**
-- If `v1.4.2` has a critical bug, only **5% of users are affected**, not everyone
-- The system **automatically detects** the issue via monitoring and rolls back
-- The previous stable version (`v1.4.1`) is always kept running until the new version is fully verified
 
 ---
 
@@ -550,10 +558,7 @@ Monitor for 15–30 minutes
 ---
 
 ### 🔴 Rollback Strategy
-
-In production, every deployment must have a rollback plan. Versioned Docker images make this straightforward:
 ```bash
-# Roll back to last stable version instantly
 docker stop devops-app
 docker rm devops-app
 docker run -d \
@@ -581,47 +586,22 @@ docker run -d \
 Developer pushes code
         ↓
 ━━━━━━━━━━━━━━━━━━━━━━━━━━  CI  ━━━━━━━━━━━━━━━━━━━━━━━━━━
-        ↓
-    Compile & Build
-        ↓
-    Unit Tests (JUnit)
-        ↓
-    Code Quality Gate (SonarQube) ──FAIL──→ ❌ Block merge
-        ↓
-    Security Scan (Trivy / OWASP) ──FAIL──→ ❌ Block merge
-        ↓
-    Integration Tests
-        ↓
-    Build versioned image → v1.4.2
-        ↓
-    Push to Docker Hub / ECR
+    Compile → Unit Tests → Code Quality → Security Scan
+    Integration Tests → Build v1.4.2 → Push to Hub
         ↓
 ━━━━━━━━━━━━━━━━━━━━━━━━━━  CD  ━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Clone → Deploy Staging → Smoke Tests
         ↓
-    Clone Repository
+    Log Analysis ──FAIL──→ 🔴 Block + Email + Stats Report
         ↓
-    Deploy to Staging
+    Canary 5% → Monitor → Scale 25% → 50% → 100%
         ↓
-    Smoke Tests ──FAIL──→ ❌ Stop deployment
-        ↓
-    Log Analysis ──FAIL──→ 🔴 Block + Email + GitHub Issue
-        ↓
-    Canary → 5% users get v1.4.2
-        ↓
-    Monitor 15 min (Prometheus + Grafana)
-        ├── ERROR ──→ 🔴 Auto Rollback to v1.4.1
-        └── OK ──→ Scale to 25% → 50% → 100%
-        ↓
-    ✅ Full rollout complete
-        ↓
-    Continuous monitoring in production
+    ✅ Full rollout + Continuous monitoring
 ```
 
 ---
 
 ## 📚 Learning Reference — Full Pipeline Using Only One Tool
-
----
 
 ### 🔵 Full Pipeline Using GitHub Actions Only
 ```yaml
@@ -634,13 +614,10 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-      - name: Setup Java
-        uses: actions/setup-java@v3
+      - uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -648,12 +625,10 @@ jobs:
       - name: Build with Maven
         run: mvn clean package
 
-      - name: Build Docker Image
-        run: docker build -t harshad8782/devops-demo:latest .
-
-      - name: Push to Docker Hub
+      - name: Build and Push Docker Image
         run: |
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          docker build -t harshad8782/devops-demo:latest .
           docker push harshad8782/devops-demo:latest
 
       - name: Deploy to Server via SSH
@@ -666,11 +641,8 @@ jobs:
             docker stop devops-app || true
             docker rm devops-app || true
             docker pull harshad8782/devops-demo:latest
-            docker run -d \
-              --name devops-app \
-              -p 8080:8080 \
-              --restart unless-stopped \
-              harshad8782/devops-demo:latest
+            docker run -d --name devops-app -p 8080:8080 \
+              --restart unless-stopped harshad8782/devops-demo:latest
 ```
 
 ---
@@ -683,57 +655,30 @@ jobs:
 | **Infrastructure** | None needed | Requires server | Requires Jenkins server |
 | **Best for** | Cloud, open source | Enterprise, private | Learning, real-world pattern |
 | **Customization** | Limited | Full control | Best of both worlds |
-| **Cost** | Free for public repos | Free software | Free software |
 | **This project uses** | ✅ CI only | ✅ CD only | ✅ Separated by design |
 
 ---
 
 ## 🧪 Running Locally
-
-### 1. Clone the repository
 ```bash
 git clone https://github.com/harshad8782/DevOps-CICD.git
 cd DevOps-CICD
-```
-
-### 2. Build the Spring Boot application
-```bash
 mvn clean package
-```
-
-### 3. Build Docker image
-```bash
 docker build -t devopsdemo .
-```
-
-### 4. Run the container
-```bash
 docker run -p 8081:8080 devopsdemo
 ```
 
-### 5. Open in browser
-```
-http://localhost:8081
-```
+Open in browser: `http://localhost:8081`
 
 ---
 
 ## 📋 Useful Docker Commands
 ```bash
-# List all running containers
-docker ps
-
-# List all images
-docker images
-
-# Stop a container
-docker stop <container_id>
-
-# Remove a container
-docker rm <container_id>
-
-# Pull from Docker Hub
-docker pull harshad8782/devops-demo:latest
+docker ps                                        # running containers
+docker images                                    # list images
+docker stop <container_id>                       # stop container
+docker rm <container_id>                         # remove container
+docker pull harshad8782/devops-demo:latest       # pull from Hub
 ```
 
 ---
