@@ -243,6 +243,9 @@ Action          : All checks passed. Deployment is proceeding.
 
 On every pipeline run, an email is automatically sent with the result, build details, and full `.txt` stats report attached.
 
+![Stats Report](screenshots/attachment.png)
+
+
 ---
 
 ### Step 7 — Application Live in Browser
