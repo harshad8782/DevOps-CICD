@@ -65,8 +65,13 @@ jobs:
       - name: Login to DockerHub
         run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
 
+      - name: Set Version Tag
+        run: echo "VERSION=v1.${{ github.run_number }}.0" >> $GITHUB_ENV
+
       - name: Build Docker Image
-        run: docker build -t ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest .
+        run: |
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/devops-demo:${{ env.VERSION }} .
+          docker build -t ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest .
 
       - name: Trivy Security Scan
         uses: aquasecurity/trivy-action@master
@@ -86,4 +91,13 @@ jobs:
           retention-days: 7
 
       - name: Push Docker Image
-        run: docker push ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest
+        run: |
+          docker push ${{ secrets.DOCKER_USERNAME }}/devops-demo:${{ env.VERSION }}
+          docker push ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest
+
+      - name: Print Version Info
+        run: |
+          echo "✅ Image pushed successfully"
+          echo "📦 Version  : ${{ env.VERSION }}"
+          echo "📦 Latest   : ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest"
+          echo "📦 Versioned: ${{ secrets.DOCKER_USERNAME }}/devops-demo:${{ env.VERSION }}"
