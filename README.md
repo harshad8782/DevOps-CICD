@@ -1,4 +1,4 @@
-# 🚀 DevOps CI/CD Pipeline Demo
+# 🚀 DevOps CI/CD Pipeline
 
 > A complete end-to-end **DevOps CI/CD pipeline** built with Spring Boot, Docker, GitHub Actions, and Jenkins — demonstrating automated build, containerization, deployment workflows, production-grade log analysis, code quality gates, security scanning, and email alerting.
 
