@@ -1,17 +1,47 @@
 #!/bin/bash
-# This script runs when EC2 starts for the first time
+# Ubuntu-compatible setup script
 
-yum update -y
-yum install -y docker curl git
+apt-get update -y
+apt-get upgrade -y
 
-# Start Docker
-service docker start
-usermod -a -G docker ec2-user
-chkconfig docker on
+# ────────────────────────────────────────────
+# Install Docker
+# ────────────────────────────────────────────
+apt-get install -y ca-certificates curl gnupg lsb-release
 
-# Install AWS CLI
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-unzip awscliv2.zip
-./aws/install
+# Add Docker's official GPG key
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
 
-echo "EC2 setup complete — ready for deployment"
+# Add Docker repository
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
+  https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+apt-get update -y
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Start and enable Docker
+systemctl start docker
+systemctl enable docker
+usermod -aG docker ubuntu
+
+# ────────────────────────────────────────────
+# Install AWS CLI v2
+# ────────────────────────────────────────────
+apt-get install -y unzip curl
+
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+unzip /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+
+# ────────────────────────────────────────────
+# Verify installations
+# ────────────────────────────────────────────
+docker --version
+aws --version
+
+echo "✅ EC2 Ubuntu setup complete — ready for deployment"

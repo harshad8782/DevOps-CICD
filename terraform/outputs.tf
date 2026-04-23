@@ -5,7 +5,7 @@ output "ec2_public_ip" {
 
 output "ssh_command" {
   description = "SSH command to connect to EC2"
-  value       = "ssh -i ${var.app_name}-keypair.pem ec2-user@${aws_eip.devops_eip.public_ip}"
+  value       = "ssh -i ${var.app_name}-keypair.pem ubuntu@${aws_eip.devops_eip.public_ip}"
 }
 
 output "app_url" {
