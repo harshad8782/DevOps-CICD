@@ -3,14 +3,11 @@ variable "aws_region" {
 }
 
 variable "instance_type" {
-  default = "t2.micro"    # free tier eligible
+  default = "t2.micro"
 }
 
 variable "app_name" {
   default = "devops-demo"
 }
 
-variable "key_pair_name" {
-  description = "Name of your AWS key pair for SSH"
-  type        = string
-}
+# key_pair_name variable REMOVED — Terraform creates it automatically now
