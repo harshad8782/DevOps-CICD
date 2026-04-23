@@ -16,6 +16,9 @@ jobs:
 
     steps:
 
+      # ────────────────────────────────────────────
+      # 1. SOURCE & BUILD
+      # ────────────────────────────────────────────
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
@@ -30,6 +33,9 @@ jobs:
       - name: Build Maven Project
         run: mvn clean package -DskipTests
 
+      # ────────────────────────────────────────────
+      # 2. TEST & QUALITY
+      # ────────────────────────────────────────────
       - name: Run Unit Tests
         run: mvn test
 
@@ -62,42 +68,97 @@ jobs:
           reporter: java-junit
           fail-on-error: false
 
-      - name: Login to DockerHub
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-
+      # ────────────────────────────────────────────
+      # 3. VERSIONING
+      # ────────────────────────────────────────────
       - name: Set Version Tag
         run: echo "VERSION=v1.${{ github.run_number }}.0" >> $GITHUB_ENV
 
-      - name: Build Docker Image
+      # ────────────────────────────────────────────
+      # 4. DOCKERHUB — Build, Scan & Push
+      # ────────────────────────────────────────────
+      - name: Login to DockerHub
+        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+
+      - name: Build Docker Image (DockerHub)
         run: |
           docker build -t ${{ secrets.DOCKER_USERNAME }}/devops-demo:${{ env.VERSION }} .
           docker build -t ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest .
 
-      - name: Trivy Security Scan
+      - name: Trivy Security Scan (DockerHub Image)
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest
           format: table
           exit-code: 0
           severity: CRITICAL,HIGH
-          output: trivy-report.txt
+          output: trivy-report-dockerhub.txt
 
-      - name: Upload Trivy Report
+      - name: Upload Trivy Report (DockerHub)
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: trivy-security-report
-          path: trivy-report.txt
+          name: trivy-security-report-dockerhub
+          path: trivy-report-dockerhub.txt
           retention-days: 7
 
-      - name: Push Docker Image
+      - name: Push Docker Image to DockerHub
         run: |
           docker push ${{ secrets.DOCKER_USERNAME }}/devops-demo:${{ env.VERSION }}
           docker push ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest
 
-      - name: Print Version Info
+      - name: Print DockerHub Version Info
         run: |
-          echo "✅ Image pushed successfully"
+          echo "✅ Image pushed to DockerHub successfully"
           echo "📦 Version  : ${{ env.VERSION }}"
           echo "📦 Latest   : ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest"
           echo "📦 Versioned: ${{ secrets.DOCKER_USERNAME }}/devops-demo:${{ env.VERSION }}"
+
+      # ────────────────────────────────────────────
+      # 5. AWS ECR — Build, Scan & Push
+      # ────────────────────────────────────────────
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker Image (ECR)
+        run: |
+          ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+          docker build -t $ECR_URI:${{ env.VERSION }} .
+          docker build -t $ECR_URI:latest .
+
+      - name: Trivy Security Scan (ECR Image)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+          output: trivy-report-ecr.txt
+
+      - name: Upload Trivy Report (ECR)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-security-report-ecr
+          path: trivy-report-ecr.txt
+          retention-days: 7
+
+      - name: Push Docker Image to ECR
+        run: |
+          ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+          docker push $ECR_URI:${{ env.VERSION }}
+          docker push $ECR_URI:latest
+
+      - name: Print ECR Version Info
+        run: |
+          echo "✅ Image pushed to ECR successfully"
+          echo "📦 Version : ${{ env.VERSION }}"
+          echo "📦 ECR URI : ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}"
