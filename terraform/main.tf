@@ -97,6 +97,7 @@ resource "aws_instance" "devops_server" {
   key_name               = aws_key_pair.devops_keypair.key_name  # uses auto-created key
   vpc_security_group_ids = [aws_security_group.devops_sg.id]
   user_data              = file("userdata.sh")
+  user_data_replace_on_change = true   # ← forces EC2 recreate when userdata changes
 
   tags = {
     Name        = "${var.app_name}-server"
