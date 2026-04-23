@@ -115,4 +115,4 @@ deploy-production:
   only:
     - main
   environment:
-    name: productions
+    name: production
