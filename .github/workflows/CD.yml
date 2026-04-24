@@ -379,25 +379,37 @@ jobs:
             echo "🐧 Unix runner — running log_analyzer.sh remotely on EC2"
 
             # Copy the analyzer script to EC2
+            if [ "$RUNNER_OS_TYPE" = "unix" ]; then
+            echo "🐧 Unix runner — running log_analyzer.sh remotely on EC2"
+
+            # Copy script
             scp -i /tmp/devops-demo-keypair.pem \
                 -o StrictHostKeyChecking=no \
                 log_analyzer.sh \
                 ubuntu@${EC2_IP}:/home/ubuntu/log_analyzer.sh
 
-            # Run it on EC2, capture exit code
+            # Execute script remotely (NO HEREDOC)
             ssh -i /tmp/devops-demo-keypair.pem \
                 -o StrictHostKeyChecking=no \
-                ubuntu@${EC2_IP} << ENDSSH
-              chmod +x /home/ubuntu/log_analyzer.sh
-              export CONTAINER_NAME=${CONTAINER_NAME}
-              export ALERT_EMAIL=${ALERT_EMAIL}
-              export WORKSPACE=/home/ubuntu
-              export BUILD_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-              export JOB_NAME="${{ github.workflow }}"
-              export BUILD_NUMBER="${{ github.run_number }}"
-              /home/ubuntu/log_analyzer.sh
-            ENDSSH
+                ubuntu@${EC2_IP} "
+                  chmod +x /home/ubuntu/log_analyzer.sh &&
+                  export CONTAINER_NAME='${CONTAINER_NAME}' &&
+                  export ALERT_EMAIL='${ALERT_EMAIL}' &&
+                  export WORKSPACE='/home/ubuntu' &&
+                  export BUILD_URL='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}' &&
+                  export JOB_NAME='${{ github.workflow }}' &&
+                  export BUILD_NUMBER='${{ github.run_number }}' &&
+                  /home/ubuntu/log_analyzer.sh
+                "
+
             LOG_EXIT=$?
+
+          else
+            echo "🪟 Windows runner — would run log_analyzer.ps1"
+            LOG_EXIT=0
+          fi
+
+            
 
             # Copy the generated stats report back to the runner
             scp -i /tmp/devops-demo-keypair.pem \
