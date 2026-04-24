@@ -191,31 +191,38 @@ jobs:
       # Polls every 15s until both commands respond,
       # with a 10-minute timeout (40 attempts).
       # ─────────────────────────────────────────────────
-      - name: Wait for EC2 Userdata to Complete
+      - name: Wait for EC2 Userdata to Complete (FINAL FIX)
         run: |
-          echo "⏳ Waiting for userdata completion flag..."
+          echo "⏳ Waiting for userdata completion..."
 
           for i in $(seq 1 40); do
             STATUS=$(ssh -i /tmp/devops-demo-keypair.pem \
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=10 \
             ubuntu@${EC2_IP} \
-            "[ -f /home/ubuntu/userdata_done ] && echo OK" 2>/dev/null || echo "")
+            "sudo test -f /tmp/userdata_done && echo READY" 2>&1)
 
-            if [ "$STATUS" = "OK" ]; then
+            echo "Attempt ${i}: ${STATUS}"
+
+            if [[ "$STATUS" == *"READY"* ]]; then
               echo "✅ EC2 setup completed"
               break
             fi
 
-            echo "Attempt ${i}/40 — not ready yet..."
-            sleep 15
-
             if [ "$i" = "40" ]; then
-             echo "❌ Timeout waiting for userdata completion"
-            exit 1
-            fi
-          done
+              echo "❌ Timeout waiting for userdata completion"
+              echo "🔍 Fetching logs..."
 
+              ssh -i /tmp/devops-demo-keypair.pem \
+              -o StrictHostKeyChecking=no \
+              ubuntu@${EC2_IP} \
+              "sudo tail -n 100 /var/log/user-data.log"
+
+              exit 1
+            fi
+
+            sleep 15
+          done
       # ─────────────────────────────────────────────────
       # Pull + Run container on EC2
       # ─────────────────────────────────────────────────

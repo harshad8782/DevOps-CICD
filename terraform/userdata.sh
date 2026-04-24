@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 exec > /var/log/user-data.log 2>&1
 
 echo "=============================="
