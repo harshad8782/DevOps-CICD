@@ -28,7 +28,6 @@ jobs:
       pem_key:   ${{ steps.tf_outputs.outputs.pem_key }}
 
     steps:
-
       - name: Checkout Code
         uses: actions/checkout@v4
 
@@ -38,6 +37,17 @@ jobs:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Get latest image tag from ECR
+        run: |
+          VERSION=$(aws ecr describe-images \
+            --repository-name ${{ secrets.ECR_REPOSITORY }} \
+            --region ${{ secrets.AWS_REGION }} \
+            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+            --output text)
+
+          echo "VERSION=${VERSION}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
       # ─────────────────────────────────────────────────
       # Setup Terraform CLI
