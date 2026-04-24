@@ -63,7 +63,7 @@ chown ubuntu:ubuntu /home/ubuntu/reports
 # FINAL SIGNAL (CRITICAL)
 # ────────────────────────────────
 touch /tmp/userdata_done
-chmod 644 /tmp/userdata_done
+#chmod 644 /tmp/userdata_done
 
 echo "=============================="
 echo " Setup Complete"
