@@ -339,16 +339,15 @@ jobs:
 
           if [ "$HEALTHY" != "true" ]; then
             echo "❌ Health check failed after 5 attempts"
-
-            # Auto rollback on EC2
             ssh -i /tmp/devops-demo-keypair.pem \
-                -o StrictHostKeyChecking=no \
-                ubuntu@${EC2_IP} << 'ROLLBACK'
-              echo "🔄 Rolling back..."
-              docker stop devops-app 2>/dev/null || true
-              docker rm   devops-app 2>/dev/null || true
-              echo "❌ Rollback complete — no previous image to restore (first deploy)"
+            -o StrictHostKeyChecking=no \
+            ubuntu@${EC2_IP} << 'ROLLBACK'
+            echo "🔄 Rolling back..."
+            docker stop devops-app 2>/dev/null || true
+            docker rm devops-app 2>/dev/null || true
+            echo "❌ Rollback complete — no previous image to restore (first deploy)"
             ROLLBACK
+
             exit 1
           fi
 
