@@ -71,9 +71,10 @@ resource "aws_iam_instance_profile" "ec2_profile" {
 # ────────────────────────────────────────────
 resource "aws_security_group" "devops_sg" {
   name        = "${var.app_name}-sg"
-  description = "DevOps security group"
+  description = "Security group for DevOps app"
 
   ingress {
+    description = "SSH"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -81,6 +82,7 @@ resource "aws_security_group" "devops_sg" {
   }
 
   ingress {
+    description = "Jenkins UI"
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
@@ -88,6 +90,15 @@ resource "aws_security_group" "devops_sg" {
   }
 
   ingress {
+    description = "App port"
+    from_port   = 8081
+    to_port     = 8081
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -99,6 +110,11 @@ resource "aws_security_group" "devops_sg" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name      = "${var.app_name}-sg"
+    ManagedBy = "Terraform"
   }
 }
 

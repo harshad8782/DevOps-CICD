@@ -124,9 +124,14 @@ jobs:
           echo "📦 ECR URI : ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}"
 
       # ────────────────────────────────────────────
-      # 5. DEPLOY TO EC2 — Coming Soon
-      # (Add once EC2 key pair is ready)
-      # - Deploy to EC2 via appleboy/ssh-action
-      # - Verify EC2 Deployment via curl
-      
+      # 5. TRIGGER JENKINS CD PIPELINE
       # ────────────────────────────────────────────
+      - name: Trigger Jenkins CD Pipeline
+        if: success()
+        run: |
+          echo "🚀 Triggering Jenkins CD pipeline..."
+          curl -X POST \
+            "http://${{ secrets.JENKINS_URL }}/job/DevOps-CD/build" \
+            --user "${{ secrets.JENKINS_USER }}:${{ secrets.JENKINS_TOKEN }}" \
+            --data-urlencode json=''
+          echo "✅ Jenkins CD pipeline triggered successfully"
