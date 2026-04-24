@@ -49,8 +49,18 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   jenkins/jenkins:lts
 
-# Wait for Jenkins to fully start
+# Wait for Jenkins to start
 sleep 30
+
+# Install AWS CLI and Docker inside Jenkins container
+docker exec --user root jenkins bash -c "
+  apt-get update -y &&
+  apt-get install -y curl unzip docker.io &&
+  curl 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o '/tmp/awscliv2.zip' &&
+  unzip /tmp/awscliv2.zip -d /tmp &&
+  /tmp/aws/install
+"
+echo "✅ Jenkins ready with AWS CLI and Docker"
 
 # ────────────────────────────────
 # Verify
