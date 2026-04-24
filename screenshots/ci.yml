@@ -1,0 +1,137 @@
+name: DevOps CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+
+    steps:
+
+      # ────────────────────────────────────────────
+      # 1. SOURCE & BUILD
+      # ────────────────────────────────────────────
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Build Maven Project
+        run: mvn clean package -DskipTests
+
+      # ────────────────────────────────────────────
+      # 2. TEST & QUALITY
+      # ────────────────────────────────────────────
+      - name: Run Unit Tests
+        run: mvn test
+
+      - name: Generate Coverage Report
+        run: mvn jacoco:report
+
+      - name: Check Coverage Threshold
+        run: mvn jacoco:check
+        continue-on-error: true
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-coverage-report
+          path: target/site/jacoco/
+          retention-days: 7
+
+      - name: SonarCloud Scan
+        run: mvn sonar:sonar -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Publish Test Results
+        uses: dorny/test-reporter@v1
+        if: success() || failure()
+        with:
+          name: JUnit Test Results
+          path: target/surefire-reports/*.xml
+          reporter: java-junit
+          fail-on-error: false
+
+      # ────────────────────────────────────────────
+      # 3. VERSIONING
+      # ────────────────────────────────────────────
+      - name: Set Version Tag
+        run: echo "VERSION=v1.${{ github.run_number }}.0" >> $GITHUB_ENV
+
+      # ────────────────────────────────────────────
+      # 4. AWS ECR — Build, Scan & Push
+      # ────────────────────────────────────────────
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker Image
+        run: |
+          ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+          docker build -t $ECR_URI:${{ env.VERSION }} .
+          docker build -t $ECR_URI:latest .
+
+      - name: Trivy Security Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+          output: trivy-report.txt
+
+      - name: Upload Trivy Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-security-report
+          path: trivy-report.txt
+          retention-days: 7
+
+      - name: Push Docker Image to ECR
+        run: |
+          ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+          docker push $ECR_URI:${{ env.VERSION }}
+          docker push $ECR_URI:latest
+
+      - name: Print Version Info
+        run: |
+          echo "✅ Image pushed to ECR successfully"
+          echo "📦 Version : ${{ env.VERSION }}"
+          echo "📦 ECR URI : ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}"
+
+      # ────────────────────────────────────────────
+      # 5. TRIGGER JENKINS CD PIPELINE
+      # ────────────────────────────────────────────
+      - name: Trigger Jenkins CD Pipeline
+        if: success()
+        run: |
+          echo "🚀 Triggering Jenkins CD pipeline..."
+          curl -X POST \
+            "http://${{ secrets.JENKINS_URL }}/job/DevOps-CD/build" \
+            --user "${{ secrets.JENKINS_USER }}:${{ secrets.JENKINS_TOKEN }}" \
+            --data-urlencode json=''
+          echo "✅ Jenkins CD pipeline triggered successfully"
