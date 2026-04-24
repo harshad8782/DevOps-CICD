@@ -124,14 +124,227 @@ jobs:
           echo "📦 ECR URI : ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}"
 
       # ────────────────────────────────────────────
-      # 5. TRIGGER JENKINS CD PIPELINE
+      # 5. TRIGGER JENKINS (if available)
+      #    Falls back to EC2 SSH deploy if Jenkins
+      #    is not reachable or secret not set
       # ────────────────────────────────────────────
       - name: Trigger Jenkins CD Pipeline
-        if: success()
+        id: jenkins-trigger
+        if: ${{ secrets.JENKINS_URL != '' }}
+        continue-on-error: true
         run: |
-          echo "🚀 Triggering Jenkins CD pipeline..."
-          curl -X POST \
-            "http://${{ secrets.JENKINS_URL }}/job/DevOps-CD/build" \
-            --user "${{ secrets.JENKINS_USER }}:${{ secrets.JENKINS_TOKEN }}" \
-            --data-urlencode json=''
-          echo "✅ Jenkins CD pipeline triggered successfully"
+          echo "🚀 Attempting to trigger Jenkins CD pipeline..."
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            "http://${{ secrets.JENKINS_URL }}/job/DevOps-CD/build?token=${{ secrets.JENKINS_TOKEN }}" \
+            --user "${{ secrets.JENKINS_USER }}:${{ secrets.JENKINS_API_TOKEN }}" \
+            --max-time 10)
+          echo "Jenkins response code: $RESPONSE"
+          if [ "$RESPONSE" = "201" ] || [ "$RESPONSE" = "200" ]; then
+            echo "JENKINS_TRIGGERED=true" >> $GITHUB_ENV
+            echo "✅ Jenkins CD pipeline triggered successfully"
+          else
+            echo "JENKINS_TRIGGERED=false" >> $GITHUB_ENV
+            echo "⚠️ Jenkins not reachable (code $RESPONSE) — will deploy via EC2 SSH"
+          fi
+
+      # ────────────────────────────────────────────
+      # 6. CD — DEPLOY TO EC2 VIA SSH
+      #    Runs when Jenkins is not triggered
+      # ────────────────────────────────────────────
+      - name: Deploy to EC2 via SSH
+        if: env.JENKINS_TRIGGERED != 'true'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            ECR_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+            CONTAINER_NAME=devops-app
+            APP_PORT=8080
+            CONTAINER_PORT=8080
+            VERSION=${{ env.VERSION }}
+
+            echo "============================================"
+            echo "  EC2 CD Pipeline (GitHub Actions)"
+            echo "  Version : $VERSION"
+            echo "============================================"
+
+            # ── Step 1 — Login to ECR ──────────────────
+            echo "🔐 Logging into AWS ECR..."
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+              docker login --username AWS \
+              --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+            echo "✅ ECR login successful"
+
+            # ── Step 2 — Save current version ─────────
+            echo "💾 Saving current version for rollback..."
+            CURRENT=$(docker inspect $CONTAINER_NAME \
+              --format='{{.Config.Image}}' 2>/dev/null || echo "none")
+            echo "Current version: $CURRENT"
+
+            # ── Step 3 — Pull new image ────────────────
+            echo "📥 Pulling image $ECR_URI:latest..."
+            docker pull $ECR_URI:latest
+            echo "✅ Image pulled"
+
+            # ── Step 4 — Deploy with rollback ─────────
+            echo "🚀 Deploying container..."
+            docker stop $CONTAINER_NAME 2>/dev/null || true
+            docker rm $CONTAINER_NAME 2>/dev/null || true
+
+            if docker run -d \
+                --name $CONTAINER_NAME \
+                -p $APP_PORT:$CONTAINER_PORT \
+                --restart unless-stopped \
+                --label "version=$VERSION" \
+                --label "deployed=$(date '+%Y-%m-%d %H:%M:%S')" \
+                $ECR_URI:latest; then
+              echo "✅ Container started successfully"
+            else
+              echo "❌ Deploy failed — rolling back to $CURRENT"
+              if [ "$CURRENT" != "none" ]; then
+                docker run -d \
+                  --name $CONTAINER_NAME \
+                  -p $APP_PORT:$CONTAINER_PORT \
+                  --restart unless-stopped \
+                  $CURRENT
+                echo "✅ Rolled back to $CURRENT"
+              fi
+              exit 1
+            fi
+
+            # ── Step 5 — Health check ──────────────────
+            echo "🏥 Running health check..."
+            sleep 10
+            MAX_RETRIES=5
+            COUNT=0
+            HEALTHY=false
+
+            CONTAINER_IP=$(docker inspect $CONTAINER_NAME \
+              --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+
+            while [ $COUNT -lt $MAX_RETRIES ]; do
+              if curl -sf http://$CONTAINER_IP:$CONTAINER_PORT > /dev/null 2>&1; then
+                HEALTHY=true
+                echo "✅ Health check PASSED — App healthy at http://$CONTAINER_IP:$CONTAINER_PORT"
+                break
+              else
+                COUNT=$((COUNT + 1))
+                echo "⏳ Attempt $COUNT/$MAX_RETRIES — retrying in 5s..."
+                sleep 5
+              fi
+            done
+
+            if [ "$HEALTHY" = false ]; then
+              echo "❌ Health check FAILED — rolling back..."
+              docker stop $CONTAINER_NAME || true
+              docker rm $CONTAINER_NAME || true
+              if [ "$CURRENT" != "none" ]; then
+                docker run -d \
+                  --name $CONTAINER_NAME \
+                  -p $APP_PORT:$CONTAINER_PORT \
+                  --restart unless-stopped \
+                  $CURRENT
+                echo "✅ Rolled back to $CURRENT"
+              fi
+              exit 1
+            fi
+
+            # ── Step 6 — Log analysis ──────────────────
+            echo "🔍 Running log analysis..."
+            LOGS=$(docker logs $CONTAINER_NAME --tail 500 2>&1)
+            TIMESTAMP=$(date '+%Y-%m-%d_%H-%M-%S')
+            REPORT_DIR="/home/${{ secrets.EC2_USER }}/reports"
+            mkdir -p $REPORT_DIR
+            STATS_FILE="$REPORT_DIR/log_stats_${CONTAINER_NAME}_${TIMESTAMP}.txt"
+
+            cat > $STATS_FILE << EOF
+            ====================================================
+              LOG ANALYSIS STATS REPORT
+            ====================================================
+            Generated     : $(date '+%Y-%m-%d %H:%M:%S')
+            Container     : $CONTAINER_NAME
+            Version       : $VERSION
+            Lines Scanned : 500
+            ====================================================
+
+            --------------------------------------------------
+              CRITICAL ERROR PATTERNS  (threshold: 5)
+            --------------------------------------------------
+            EOF
+
+            CRITICAL_FOUND=0
+            for PATTERN in ERROR FATAL CRITICAL EXCEPTION; do
+              COUNT=$(echo "$LOGS" | grep -i -c "$PATTERN" 2>/dev/null || echo 0)
+              echo "  $PATTERN : $COUNT occurrences" >> $STATS_FILE
+              if [ "$COUNT" -gt 5 ]; then
+                CRITICAL_FOUND=$((CRITICAL_FOUND + 1))
+                echo "  !! THRESHOLD EXCEEDED" >> $STATS_FILE
+              fi
+            done
+
+            cat >> $STATS_FILE << EOF
+
+            --------------------------------------------------
+              WARNING PATTERNS  (threshold: 10)
+            --------------------------------------------------
+            EOF
+
+            WARN_FOUND=0
+            for PATTERN in WARN WARNING DEPRECATED; do
+              COUNT=$(echo "$LOGS" | grep -i -c "$PATTERN" 2>/dev/null || echo 0)
+              echo "  $PATTERN : $COUNT occurrences" >> $STATS_FILE
+              if [ "$COUNT" -gt 10 ]; then
+                WARN_FOUND=$((WARN_FOUND + 1))
+                echo "  !! THRESHOLD EXCEEDED" >> $STATS_FILE
+              fi
+            done
+
+            if [ "$CRITICAL_FOUND" -gt 0 ]; then
+              STATUS="FAILED"
+            elif [ "$WARN_FOUND" -gt 0 ]; then
+              STATUS="UNSTABLE"
+            else
+              STATUS="PASSED"
+            fi
+
+            cat >> $STATS_FILE << EOF
+
+            ====================================================
+              PIPELINE DECISION SUMMARY
+            ====================================================
+            Status          : $STATUS
+            Critical Issues : $CRITICAL_FOUND pattern(s) exceeded threshold
+            Warnings        : $WARN_FOUND pattern(s) exceeded threshold
+            Action          : Deployment complete via GitHub Actions EC2 SSH
+            ====================================================
+            EOF
+
+            echo "📊 Log analysis complete — Status: $STATUS"
+            cat $STATS_FILE
+
+            # ── Step 7 — Verify ────────────────────────
+            echo "✅ Verifying final deployment..."
+            docker ps | grep $CONTAINER_NAME
+            docker logs $CONTAINER_NAME --tail=20
+            echo "🎉 Deployment complete — App running at http://$(curl -s ifconfig.me):$APP_PORT"
+
+            # ── Step 8 — Cleanup ───────────────────────
+            echo "🧹 Cleaning up unused images..."
+            docker image prune -f
+
+      # ────────────────────────────────────────────
+      # 7. VERIFY EC2 APP IS LIVE
+      # ────────────────────────────────────────────
+      - name: Verify App is Live on EC2
+        if: env.JENKINS_TRIGGERED != 'true'
+        run: |
+          echo "🌐 Verifying app is accessible..."
+          sleep 15
+          if curl -sf http://${{ secrets.EC2_HOST }}:8080 > /dev/null; then
+            echo "✅ App is LIVE at http://${{ secrets.EC2_HOST }}:8080"
+          else
+            echo "⚠️ App may still be starting — check EC2 directly"
+          fi
