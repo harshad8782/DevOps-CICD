@@ -185,12 +185,26 @@ jobs:
           chmod 400 /tmp/devops-demo-keypair.pem
           echo "✅ PEM key written to /tmp/devops-demo-keypair.pem"
 
+
       # ─────────────────────────────────────────────────
       # Wait for userdata.sh to finish installing
       # Docker + AWS CLI on the EC2.
       # Polls every 15s until both commands respond,
       # with a 10-minute timeout (40 attempts).
       # ─────────────────────────────────────────────────
+      - name: Wait for SSH to be fully ready
+        run: |
+          echo "⏳ Ensuring SSH is fully ready..."
+
+          for i in $(seq 1 10); do
+            ssh -i /tmp/devops-demo-keypair.pem \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=5 \
+            ubuntu@${EC2_IP} "echo SSH OK" && break
+
+          echo "SSH not ready yet..."
+          sleep 10
+          done
       - name: Wait for EC2 Userdata to Complete
         run: |
           echo "⏳ Waiting for EC2 readiness..."
@@ -220,6 +234,7 @@ jobs:
 
           sleep 15
           done
+
       # ─────────────────────────────────────────────────
       # Pull + Run container on EC2
       # ─────────────────────────────────────────────────
