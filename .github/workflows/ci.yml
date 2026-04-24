@@ -65,11 +65,6 @@ jobs:
       # ─────────────────────────────────────────────────
       - name: Generate JaCoCo Coverage Report
         run: mvn jacoco:report
-
-      - name: Check Coverage Threshold
-        run: mvn jacoco:check
-        continue-on-error: true
-
       - name: Upload JaCoCo Report
         uses: actions/upload-artifact@v4
         with:
