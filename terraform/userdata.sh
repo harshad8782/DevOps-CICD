@@ -44,9 +44,14 @@ apt-get install -y fontconfig openjdk-17-jre
 # ────────────────────────────────
 # Install Jenkins — fixed GPG key method
 # ────────────────────────────────
-curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
-  | gpg --dearmor \
-  | tee /usr/share/keyrings/jenkins-keyring.gpg > /dev/null
+wget -q -O /tmp/jenkins.key https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+gpg --no-default-keyring \
+    --keyring /tmp/jenkins-temp.gpg \
+    --import /tmp/jenkins.key
+gpg --no-default-keyring \
+    --keyring /tmp/jenkins-temp.gpg \
+    --export \
+    | tee /usr/share/keyrings/jenkins-keyring.gpg > /dev/null
 
 echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.gpg] \
   https://pkg.jenkins.io/debian-stable binary/" \
@@ -57,9 +62,8 @@ apt-get install -y jenkins
 
 systemctl enable jenkins
 systemctl start jenkins
-
-# Add jenkins to docker group AFTER jenkins is installed
 usermod -aG docker jenkins
+systemctl restart jenkins
 
 # ────────────────────────────────
 # Verify
