@@ -27,8 +27,7 @@ apt-get install -y docker-ce docker-ce-cli containerd.io
 
 systemctl enable docker
 systemctl start docker
-usermod -aG docker ubuntu
-usermod -aG docker jenkins  # so jenkins can run docker commands
+usermod -aG docker ubuntu      # ubuntu user added here — safe, user exists
 
 # ────────────────────────────────
 # Install AWS CLI
@@ -45,9 +44,11 @@ apt-get install -y fontconfig openjdk-17-jre
 # ────────────────────────────────
 # Install Jenkins
 # ────────────────────────────────
-curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
+  | tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
 
-echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" \
+echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] \
+  https://pkg.jenkins.io/debian-stable binary/" \
   | tee /etc/apt/sources.list.d/jenkins.list > /dev/null
 
 apt-get update -y
@@ -55,6 +56,9 @@ apt-get install -y jenkins
 
 systemctl enable jenkins
 systemctl start jenkins
+
+# Add jenkins to docker group AFTER jenkins is installed
+usermod -aG docker jenkins     # ← moved here, after jenkins exists
 
 # ────────────────────────────────
 # Verify
@@ -66,4 +70,4 @@ docker --version
 aws --version
 java -version
 systemctl status jenkins --no-pager
-echo "Jenkins running at port 8080"
+echo "Jenkins available at port 8080"
