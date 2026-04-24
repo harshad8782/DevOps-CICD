@@ -30,42 +30,41 @@ apt-get install -y docker-ce docker-ce-cli containerd.io
 systemctl enable docker
 systemctl start docker
 
-# Wait until Docker daemon is fully ready
-echo "⏳ Waiting for Docker to be ready..."
-until docker info > /dev/null 2>&1; do
-  sleep 2
-done
-echo "✅ Docker is ready"
+# Wait until Docker is ready (max 2 mins)
+echo "⏳ Waiting for Docker..."
+timeout 120 bash -c 'until docker info > /dev/null 2>&1; do sleep 2; done' \
+  || echo "⚠️ Docker not ready in time"
 
-# Allow ubuntu user to run docker
+echo "✅ Docker ready"
+
+# Allow ubuntu user
 usermod -aG docker ubuntu
-chmod 666 /var/run/docker.sock
+
+if [ -S /var/run/docker.sock ]; then
+  chmod 660 /var/run/docker.sock
+fi
 
 # ────────────────────────────────
 # Install AWS CLI v2
 # ────────────────────────────────
-curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
-  -o "/tmp/awscliv2.zip"
-
-unzip /tmp/awscliv2.zip -d /tmp
+curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+unzip -q /tmp/awscliv2.zip -d /tmp
 /tmp/aws/install
 
-# Verify AWS CLI
 aws --version
 
 # ────────────────────────────────
-# Create reports directory
+# Reports dir
 # ────────────────────────────────
 mkdir -p /home/ubuntu/reports
 chown ubuntu:ubuntu /home/ubuntu/reports
 
 # ────────────────────────────────
-# FINAL READINESS SIGNAL (IMPORTANT)
+# FINAL SIGNAL (CRITICAL)
 # ────────────────────────────────
-touch /home/ubuntu/userdata_done
-chown ubuntu:ubuntu /home/ubuntu/userdata_done
+touch /tmp/userdata_done
+chmod 644 /tmp/userdata_done
 
 echo "=============================="
 echo " Setup Complete"
 echo "=============================="
-echo "✅ EC2 ready — Docker and AWS CLI installed"

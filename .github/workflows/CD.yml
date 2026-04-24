@@ -191,9 +191,9 @@ jobs:
       # Polls every 15s until both commands respond,
       # with a 10-minute timeout (40 attempts).
       # ─────────────────────────────────────────────────
-      - name: Wait for EC2 Userdata to Complete (FINAL FIX)
+      - name: Wait for EC2 Userdata to Complete
         run: |
-          echo "⏳ Waiting for userdata completion..."
+          echo "⏳ Waiting for EC2 readiness..."
 
           for i in $(seq 1 40); do
             STATUS=$(ssh -i /tmp/devops-demo-keypair.pem \
@@ -205,23 +205,20 @@ jobs:
             echo "Attempt ${i}: ${STATUS}"
 
             if [[ "$STATUS" == *"READY"* ]]; then
-              echo "✅ EC2 setup completed"
+              echo "✅ EC2 is ready"
               break
             fi
 
             if [ "$i" = "40" ]; then
-              echo "❌ Timeout waiting for userdata completion"
-              echo "🔍 Fetching logs..."
-
+              echo "❌ Timeout waiting for EC2"
               ssh -i /tmp/devops-demo-keypair.pem \
               -o StrictHostKeyChecking=no \
               ubuntu@${EC2_IP} \
               "sudo tail -n 100 /var/log/user-data.log"
-
               exit 1
             fi
 
-            sleep 15
+          sleep 15
           done
       # ─────────────────────────────────────────────────
       # Pull + Run container on EC2
@@ -232,41 +229,43 @@ jobs:
           DOCKER_IMAGE="${ECR_BASE}:${VERSION}"
 
           ssh -i /tmp/devops-demo-keypair.pem \
-              -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=30 \
-              ubuntu@${EC2_IP} << ENDSSH
-            set -e
-            echo "──────────────────────────────────────"
-            echo "🚀 Starting deployment: ${DOCKER_IMAGE}"
-            echo "──────────────────────────────────────"
+          -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=30 \
+          ubuntu@${EC2_IP} << ENDSSH
+          set -e
 
-            # ECR login (EC2 has IAM role with ECR read access)
-            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
-              docker login --username AWS \
-              --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          echo "🚀 Deploying ${DOCKER_IMAGE}"
 
-            # Save current version for rollback
-            CURRENT=$(docker inspect ${CONTAINER_NAME} \
-              --format='{{.Config.Image}}' 2>/dev/null || echo "none")
-            echo "Current version: \${CURRENT}"
+          # Login to ECR
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+          docker login --username AWS \
+          --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
 
-            # Pull new image
-            echo "📥 Pulling ${DOCKER_IMAGE}..."
-            docker pull "${DOCKER_IMAGE}"
+          # Get current image (if exists)
+          CURRENT=\$(docker inspect ${CONTAINER_NAME} \
+          --format='{{.Config.Image}}' 2>/dev/null || true)
 
-            # Stop and remove old container
-            docker stop ${CONTAINER_NAME} 2>/dev/null || true
-            docker rm   ${CONTAINER_NAME} 2>/dev/null || true
+          if [ -n "\$CURRENT" ]; then
+            echo "Current version: \$CURRENT"
+          else
+            echo "No existing container (first deploy)"
+          fi
 
-            # Start new container
-            docker run -d \
-              --name ${CONTAINER_NAME} \
-              -p ${APP_PORT}:${CONTAINER_PORT} \
-              --restart unless-stopped \
-              "${DOCKER_IMAGE}"
+          # Pull new image
+          docker pull "${DOCKER_IMAGE}"
 
-            echo "✅ Container started: ${CONTAINER_NAME}"
-            docker ps | grep ${CONTAINER_NAME}
+          # Stop old container
+          docker stop ${CONTAINER_NAME} 2>/dev/null || true
+          docker rm ${CONTAINER_NAME} 2>/dev/null || true
+
+          # Run new container
+          docker run -d \
+            --name ${CONTAINER_NAME} \
+            -p ${APP_PORT}:${CONTAINER_PORT} \
+            --restart unless-stopped \
+            "${DOCKER_IMAGE}"
+
+             echo "✅ Deployment complete"
           ENDSSH
 
       # ─────────────────────────────────────────────────
