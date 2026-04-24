@@ -28,6 +28,7 @@ apt-get install -y docker-ce docker-ce-cli containerd.io
 systemctl enable docker
 systemctl start docker
 usermod -aG docker ubuntu
+chmod 666 /var/run/docker.sock
 
 # ────────────────────────────────
 # Install AWS CLI
@@ -37,33 +38,19 @@ unzip /tmp/awscliv2.zip -d /tmp
 /tmp/aws/install
 
 # ────────────────────────────────
-# Install Java 17
+# Run Jenkins as Docker container
 # ────────────────────────────────
-apt-get install -y fontconfig openjdk-17-jre
+docker run -d \
+  --name jenkins \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -p 50000:50000 \
+  -v jenkins_home:/var/jenkins_home \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  jenkins/jenkins:lts
 
-# ────────────────────────────────
-# Install Jenkins — fixed GPG key method
-# ────────────────────────────────
-wget -q -O /tmp/jenkins.key https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
-gpg --no-default-keyring \
-    --keyring /tmp/jenkins-temp.gpg \
-    --import /tmp/jenkins.key
-gpg --no-default-keyring \
-    --keyring /tmp/jenkins-temp.gpg \
-    --export \
-    | tee /usr/share/keyrings/jenkins-keyring.gpg > /dev/null
-
-echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.gpg] \
-  https://pkg.jenkins.io/debian-stable binary/" \
-  | tee /etc/apt/sources.list.d/jenkins.list > /dev/null
-
-apt-get update -y
-apt-get install -y jenkins
-
-systemctl enable jenkins
-systemctl start jenkins
-usermod -aG docker jenkins
-systemctl restart jenkins
+# Wait for Jenkins to fully start
+sleep 30
 
 # ────────────────────────────────
 # Verify
@@ -73,6 +60,7 @@ echo " Setup Complete"
 echo "=============================="
 docker --version
 aws --version
-java -version
-systemctl status jenkins --no-pager
-echo "✅ Jenkins available at port 8080"
+docker ps
+echo "✅ Jenkins running on port 8080"
+echo "✅ Jenkins initial password:"
+docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword || echo "Jenkins still starting — check after 2 mins"
