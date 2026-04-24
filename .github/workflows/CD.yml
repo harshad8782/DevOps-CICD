@@ -186,10 +186,33 @@ jobs:
           echo "✅ PEM key written to /tmp/devops-demo-keypair.pem"
 
       # ─────────────────────────────────────────────────
-      # Helper: run a command on the EC2 via SSH
-      # StrictHostKeyChecking=no because we just created
-      # this instance — no known_hosts entry yet
+      # Wait for userdata.sh to finish installing
+      # Docker + AWS CLI on the EC2.
+      # Polls every 15s until both commands respond,
+      # with a 10-minute timeout (40 attempts).
       # ─────────────────────────────────────────────────
+      - name: Wait for EC2 Userdata to Complete
+        run: |
+          echo "⏳ Waiting for Docker and AWS CLI to be ready on EC2..."
+          for i in $(seq 1 40); do
+            DOCKER_OK=$(ssh -i /tmp/devops-demo-keypair.pem               -o StrictHostKeyChecking=no               -o ConnectTimeout=10               -o BatchMode=yes               ubuntu@${EC2_IP}               "command -v docker && docker info > /dev/null 2>&1 && echo OK" 2>/dev/null || echo "")
+
+            AWS_OK=$(ssh -i /tmp/devops-demo-keypair.pem               -o StrictHostKeyChecking=no               -o ConnectTimeout=10               -o BatchMode=yes               ubuntu@${EC2_IP}               "command -v aws && echo OK" 2>/dev/null || echo "")
+
+            if [ "$DOCKER_OK" = "OK" ] && [ "$AWS_OK" = "OK" ]; then
+              echo "✅ Docker and AWS CLI ready after attempt ${i}"
+              break
+            fi
+
+            echo "  Attempt ${i}/40 — Docker: '${DOCKER_OK}' | AWS: '${AWS_OK}' — waiting 15s..."
+            sleep 15
+
+            if [ "$i" = "40" ]; then
+              echo "❌ Timed out waiting for EC2 setup after 10 minutes"
+              echo "Check /var/log/user-data.log on the EC2 for errors"
+              exit 1
+            fi
+          done
 
       # ─────────────────────────────────────────────────
       # Pull + Run container on EC2
