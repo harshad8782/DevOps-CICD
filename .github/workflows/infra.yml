@@ -1,0 +1,142 @@
+name: Infra — Terraform Provision
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'terraform/**'    # only runs when terraform files change
+  workflow_dispatch:       # manual trigger anytime
+
+jobs:
+  terraform:
+    name: Terraform — Provision Infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=devops-demo/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      - name: Clean Up Stale IAM Resources
+        run: |
+          APP="devops-demo"
+          echo "🧹 Checking for stale IAM resources..."
+
+          if aws iam get-role --role-name "${APP}-ec2-role" 2>/dev/null; then
+            aws iam detach-role-policy \
+              --role-name "${APP}-ec2-role" \
+              --policy-arn "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly" 2>/dev/null || true
+            aws iam remove-role-from-instance-profile \
+              --instance-profile-name "${APP}-instance-profile" \
+              --role-name "${APP}-ec2-role" 2>/dev/null || true
+            aws iam delete-role --role-name "${APP}-ec2-role" 2>/dev/null || true
+            echo "✅ Old role deleted"
+          else
+            echo "✅ No stale role found"
+          fi
+
+          if aws iam get-instance-profile \
+              --instance-profile-name "${APP}-instance-profile" 2>/dev/null; then
+            aws iam delete-instance-profile \
+              --instance-profile-name "${APP}-instance-profile" 2>/dev/null || true
+            echo "✅ Old instance profile deleted"
+          else
+            echo "✅ No stale instance profile found"
+          fi
+
+      - name: Terraform Plan
+        working-directory: terraform
+        run: |
+          terraform plan \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Extract and Save EC2 IP to GitHub Secret
+        working-directory: terraform
+        run: |
+          EC2_IP=$(terraform output -raw ec2_public_ip)
+          echo "✅ EC2 IP: ${EC2_IP}"
+          echo "EC2_IP=${EC2_IP}"
+          echo ""
+          echo "⚠️  IMPORTANT: Update EC2_HOST secret in GitHub with this IP:"
+          echo "    Settings → Secrets → EC2_HOST = ${EC2_IP}"
+
+      - name: Wait for EC2 SSH to be Ready
+        working-directory: terraform
+        run: |
+          EC2_IP=$(terraform output -raw ec2_public_ip)
+          PEM_CONTENT=$(cat devops-demo-keypair.pem)
+          echo "$PEM_CONTENT" > /tmp/devops-key.pem
+          chmod 400 /tmp/devops-key.pem
+
+          echo "⏳ Waiting for EC2 at ${EC2_IP}..."
+          for i in $(seq 1 24); do
+            if nc -zw5 "$EC2_IP" 22 2>/dev/null; then
+              echo "✅ SSH port open after ${i} attempts"
+              break
+            fi
+            echo "  Attempt ${i}/24 — sleeping 15s..."
+            sleep 15
+          done
+
+      - name: Wait for EC2 Userdata to Complete
+        working-directory: terraform
+        run: |
+          EC2_IP=$(terraform output -raw ec2_public_ip)
+
+          echo "⏳ Waiting for Docker + AWS CLI install..."
+          for i in $(seq 1 40); do
+            STATUS=$(ssh -i /tmp/devops-key.pem \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=10 \
+              -o UserKnownHostsFile=/dev/null \
+              ubuntu@${EC2_IP} \
+              "sudo test -f /tmp/userdata_done && echo READY || echo PENDING" 2>&1)
+
+            echo "Attempt ${i}/40: ${STATUS}"
+
+            if [[ "$STATUS" == *"READY"* ]]; then
+              echo "✅ EC2 is ready"
+              break
+            fi
+
+            if [ "$i" = "40" ]; then
+              echo "❌ Timeout — EC2 not ready after 10 minutes"
+              ssh -i /tmp/devops-key.pem \
+                -o StrictHostKeyChecking=no \
+                ubuntu@${EC2_IP} \
+                "sudo tail -50 /var/log/user-data.log" || true
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+          rm -f /tmp/devops-key.pem
+          echo "✅ Infrastructure ready"
