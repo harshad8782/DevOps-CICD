@@ -1,23 +1,180 @@
-name: CD — Deploy to EC2
+name: CD — Terraform Infra + Deploy to EC2
 
 on:
+  # Triggers automatically after CI completes successfully on main
   workflow_run:
     workflows: ["CI — Build, Test, Quality, Push to ECR"]
     types: [completed]
     branches: [main]
+
+  # Also allow manual trigger (e.g. re-deploy without a new push)
   workflow_dispatch:
 
 jobs:
-  deploy:
-    name: Deploy → Health Check → Log Analysis → Email
+  # ═══════════════════════════════════════════════════════════════
+  # JOB 1 — Provision or update infrastructure via Terraform
+  # ═══════════════════════════════════════════════════════════════
+  terraform:
+    name: Terraform — Provision Infrastructure
     runs-on: ubuntu-latest
 
+    # Only run if CI workflow succeeded (skip if CI failed)
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
 
+    outputs:
+      ec2_ip:    ${{ steps.tf_outputs.outputs.ec2_ip }}
+      pem_key:   ${{ steps.tf_outputs.outputs.pem_key }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Get latest image tag from ECR
+        run: |
+          VERSION=$(aws ecr describe-images \
+            --repository-name ${{ secrets.ECR_REPOSITORY }} \
+            --region ${{ secrets.AWS_REGION }} \
+            --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
+            --output text)
+
+          echo "VERSION=${VERSION}"
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+
+      # ─────────────────────────────────────────────────
+      # Setup Terraform CLI
+      # ─────────────────────────────────────────────────
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+          terraform_wrapper: false   # IMPORTANT: disable wrapper so outputs are clean strings
+
+      # ─────────────────────────────────────────────────
+      # Terraform Init — uses S3 backend for state
+      # Add backend "s3" block to your main.tf or keep
+      # local state by removing the -backend-config flags
+      # ─────────────────────────────────────────────────
+      - name: Terraform Init
+        working-directory: terraform
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=devops-demo/terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}"
+
+      # ─────────────────────────────────────────────────
+      # Clean up stale AWS resources that may exist from
+      # a previous local terraform run (outside this state).
+      # Deletes the old fixed-name IAM role/profile so
+      # Terraform can create new ones with name_prefix.
+      # Safe to run — only deletes if they exist.
+      # ─────────────────────────────────────────────────
+      - name: Clean Up Stale IAM Resources
+        run: |
+          APP="${{ vars.TF_APP_NAME || 'devops-demo' }}"
+
+          echo "🧹 Checking for stale IAM resources from previous runs..."
+
+          # Detach policies from old fixed-name role if it exists
+          if aws iam get-role --role-name "${APP}-ec2-role" 2>/dev/null; then
+            echo "Found old role ${APP}-ec2-role — cleaning up..."
+            aws iam detach-role-policy               --role-name "${APP}-ec2-role"               --policy-arn "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly" 2>/dev/null || true
+
+            # Remove role from instance profile first
+            aws iam remove-role-from-instance-profile               --instance-profile-name "${APP}-instance-profile"               --role-name "${APP}-ec2-role" 2>/dev/null || true
+
+            aws iam delete-role --role-name "${APP}-ec2-role" 2>/dev/null || true
+            echo "✅ Old role deleted"
+          else
+            echo "✅ No stale role found — nothing to clean"
+          fi
+
+          # Delete old fixed-name instance profile if it exists
+          if aws iam get-instance-profile --instance-profile-name "${APP}-instance-profile" 2>/dev/null; then
+            echo "Found old profile ${APP}-instance-profile — cleaning up..."
+            aws iam delete-instance-profile               --instance-profile-name "${APP}-instance-profile" 2>/dev/null || true
+            echo "✅ Old instance profile deleted"
+          else
+            echo "✅ No stale instance profile found — nothing to clean"
+          fi
+
+      # ─────────────────────────────────────────────────
+      # Terraform Plan — shows what will change
+      # ─────────────────────────────────────────────────
+      - name: Terraform Plan
+        working-directory: terraform
+        run: |
+          terraform plan \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -out=tfplan
+
+      # ─────────────────────────────────────────────────
+      # Terraform Apply — creates/updates infra
+      # ─────────────────────────────────────────────────
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+      # ─────────────────────────────────────────────────
+      # Extract outputs — EC2 IP + generated .pem key
+      # Terraform writes the .pem to terraform/ directory
+      # ─────────────────────────────────────────────────
+      - name: Extract Terraform Outputs
+        id: tf_outputs
+        working-directory: terraform
+        run: |
+          # Public IP from Elastic IP resource
+          EC2_IP=$(terraform output -raw ec2_public_ip)
+          echo "ec2_ip=${EC2_IP}" >> $GITHUB_OUTPUT
+          echo "EC2_IP=${EC2_IP}" >> $GITHUB_ENV
+
+          # Read the .pem file generated by Terraform's local_file resource
+          PEM_CONTENT=$(cat devops-demo-keypair.pem)
+
+          # Store PEM as a multiline output (base64 to avoid newline issues)
+          PEM_B64=$(echo "$PEM_CONTENT" | base64 -w 0)
+          echo "pem_key=${PEM_B64}" >> $GITHUB_OUTPUT
+
+          echo "✅ EC2 IP: ${EC2_IP}"
+          echo "✅ PEM key extracted successfully"
+
+      # ─────────────────────────────────────────────────
+      # Wait for EC2 userdata (Docker install) to finish
+      # Only needed on very first provision; safe to run always
+      # ─────────────────────────────────────────────────
+      - name: Wait for EC2 to be Ready
+        run: |
+          EC2_IP="${{ steps.tf_outputs.outputs.ec2_ip }}"
+          echo "⏳ Waiting for EC2 SSH at ${EC2_IP}..."
+          for i in $(seq 1 24); do
+            if nc -zw5 "$EC2_IP" 22 2>/dev/null; then
+              echo "✅ SSH port is open after ${i} attempts"
+              break
+            fi
+            echo "  Attempt ${i}/24 — not ready yet, sleeping 15s..."
+            sleep 15
+          done
+
+  # ═══════════════════════════════════════════════════════════════
+  # JOB 2 — Deploy, Health Check, Log Analysis, Alert Email
+  # ═══════════════════════════════════════════════════════════════
+  deploy:
+    name: Deploy → Health Check → Log Analysis → Email Alert
+    runs-on: ubuntu-latest
+    needs: terraform
+
+    # Reuse outputs from the terraform job
     env:
-      EC2_IP:         ${{ secrets.EC2_HOST }}
+      EC2_IP:         ${{ needs.terraform.outputs.ec2_ip }}
       CONTAINER_NAME: devops-app
       APP_PORT:       "8081"
       CONTAINER_PORT: "8080"
@@ -29,148 +186,257 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+        # ✅ ADD THIS (MANDATORY)
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
-
       # ─────────────────────────────────────────────────
-      # Write SSH key from GitHub Secret
-      # No more Terraform needed — key stored as secret
+      # Restore PEM key from terraform job output
       # ─────────────────────────────────────────────────
       - name: Write PEM Key
         run: |
-          echo "${{ secrets.EC2_SSH_KEY }}" > /tmp/devops-demo-keypair.pem
+          echo "${{ needs.terraform.outputs.pem_key }}" | base64 -d > /tmp/devops-demo-keypair.pem
           chmod 400 /tmp/devops-demo-keypair.pem
-          echo "✅ PEM key ready"
+          echo "✅ PEM key written to /tmp/devops-demo-keypair.pem"
+
 
       # ─────────────────────────────────────────────────
-      # Get latest image version from ECR
+      # Wait for userdata.sh to finish installing
+      # Docker + AWS CLI on the EC2.
+      # Polls every 15s until both commands respond,
+      # with a 10-minute timeout (40 attempts).
       # ─────────────────────────────────────────────────
-      - name: Get Latest Image Tag from ECR
+      - name: Wait for SSH to be fully ready
+        run: |
+          echo "⏳ Ensuring SSH is fully ready..."
+
+          for i in $(seq 1 10); do
+            ssh -i /tmp/devops-demo-keypair.pem \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=5 \
+            ubuntu@${EC2_IP} "echo SSH OK" && break
+
+          echo "SSH not ready yet..."
+          sleep 10
+          done
+      - name: Wait for EC2 Userdata to Complete
+        run: |
+          echo "⏳ Waiting for EC2 readiness..."
+    
+          MAX_ATTEMPTS=50  # Increase from 40 to 50 (12.5 minutes)
+          SLEEP_INTERVAL=15
+    
+          for i in $(seq 1 $MAX_ATTEMPTS); do
+            STATUS=$(ssh -i /tmp/devops-demo-keypair.pem \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            -o UserKnownHostsFile=/dev/null \
+            ubuntu@${EC2_IP} \
+            "sudo test -f /tmp/userdata_done && echo READY || echo PENDING" 2>&1)
+      
+             echo "Attempt ${i}/${MAX_ATTEMPTS}: ${STATUS}"
+      
+             if [[ "$STATUS" == *"READY"* ]]; then
+              echo "✅ EC2 is ready"
+              break
+            fi
+      
+            if [ "$i" = "$MAX_ATTEMPTS" ]; then
+              echo "❌ Timeout waiting for EC2 after $((MAX_ATTEMPTS * SLEEP_INTERVAL)) seconds"
+              echo "Retrieving diagnostic logs..."
+        
+            # Get userdata log
+              ssh -i /tmp/devops-demo-keypair.pem \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              ubuntu@${EC2_IP} \
+              "echo '=== Userdata Log ===' && sudo tail -n 100 /var/log/user-data.log && echo '=== Cloud-init Status ===' && sudo cloud-init status"
+        
+            exit 1
+          fi
+      
+          sleep $SLEEP_INTERVAL
+          done
+
+      # ─────────────────────────────────────────────────
+      # Pull + Run container on EC2
+      # ─────────────────────────────────────────────────
+      - name: Get latest image tag from ECR
         run: |
           VERSION=$(aws ecr describe-images \
             --repository-name ${{ secrets.ECR_REPOSITORY }} \
             --region ${{ secrets.AWS_REGION }} \
             --query 'sort_by(imageDetails,& imagePushedAt)[-1].imageTags[0]' \
             --output text)
+
           echo "VERSION=${VERSION}"
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
-
-      # ─────────────────────────────────────────────────
-      # Deploy container on EC2
-      # ─────────────────────────────────────────────────
+      
       - name: Deploy Container on EC2
         run: |
           DOCKER_IMAGE="${ECR_BASE}:${VERSION}"
 
           ssh -i /tmp/devops-demo-keypair.pem \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=30 \
-            ubuntu@${EC2_IP} \
-            "
-              set -e
-              echo '🚀 Deploying ${DOCKER_IMAGE}'
+          -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=30 \
+          ubuntu@${EC2_IP} << ENDSSH
+          set -e
 
-              aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
-                docker login --username AWS \
-                --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          echo "🚀 Deploying ${DOCKER_IMAGE}"
 
-              CURRENT=\$(docker inspect ${CONTAINER_NAME} \
-                --format='{{.Config.Image}}' 2>/dev/null || echo 'none')
-              echo \"Current version: \$CURRENT\"
+          # Login to ECR
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+          docker login --username AWS \
+          --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
 
-              docker pull '${DOCKER_IMAGE}'
+          # Get current image (if exists)
+          CURRENT=\$(docker inspect ${CONTAINER_NAME} \
+          --format='{{.Config.Image}}' 2>/dev/null || true)
 
-              docker stop ${CONTAINER_NAME} 2>/dev/null || true
-              docker rm   ${CONTAINER_NAME} 2>/dev/null || true
+          if [ -n "\$CURRENT" ]; then
+            echo "Current version: \$CURRENT"
+          else
+            echo "No existing container (first deploy)"
+          fi
 
-              docker run -d \
-                --name ${CONTAINER_NAME} \
-                -p ${APP_PORT}:${CONTAINER_PORT} \
-                --restart unless-stopped \
-                '${DOCKER_IMAGE}'
+          # Pull new image
+          docker pull "${DOCKER_IMAGE}"
 
-              echo '✅ Deployment complete'
-            "
+          # Stop old container
+          docker stop ${CONTAINER_NAME} 2>/dev/null || true
+          docker rm ${CONTAINER_NAME} 2>/dev/null || true
+
+          # Run new container
+          docker run -d \
+            --name ${CONTAINER_NAME} \
+            -p ${APP_PORT}:${CONTAINER_PORT} \
+            --restart unless-stopped \
+            "${DOCKER_IMAGE}"
+
+             echo "✅ Deployment complete"
+          ENDSSH
 
       # ─────────────────────────────────────────────────
-      # Health Check — retry 5 times
+      # Health Check — retry 5 times, 10s apart
       # ─────────────────────────────────────────────────
       - name: Health Check
         id: health_check
         run: |
-          echo "🏥 Health check on http://${EC2_IP}:${APP_PORT}"
+          echo "🏥 Running health check on http://${EC2_IP}:${APP_PORT}"
           HEALTHY=false
-
           for i in 1 2 3 4 5; do
             if curl -sf --max-time 10 "http://${EC2_IP}:${APP_PORT}" > /dev/null; then
               echo "✅ App healthy on attempt ${i}"
               HEALTHY=true
               break
             fi
-            echo "⏳ Attempt ${i}/5 — waiting 10s..."
+            echo "⏳ Attempt ${i}/5 failed — waiting 10s..."
             sleep 10
           done
 
           if [ "$HEALTHY" != "true" ]; then
-            echo "❌ Health check failed — rolling back..."
+            echo "❌ Health check failed after 5 attempts"
+
             ssh -i /tmp/devops-demo-keypair.pem \
               -o StrictHostKeyChecking=no \
-              ubuntu@${EC2_IP} \
-              "docker stop devops-app 2>/dev/null || true; docker rm devops-app 2>/dev/null || true; echo 'Rollback complete'"
-            exit 1
+              ubuntu@${EC2_IP} "
+                echo '🔄 Rolling back...';
+                docker stop devops-app 2>/dev/null || true;
+                docker rm devops-app 2>/dev/null || true;
+                echo '❌ Rollback complete — no previous image to restore';
+              "
+            exit 1  
           fi
-
       # ─────────────────────────────────────────────────
-      # Log Analysis — runs on EC2 via SSH
+      # Log Analysis
+      # GitHub Actions runners are always Linux (Ubuntu).
+      # The isUnix() check is preserved here as a comment
+      # for documentation parity with the Jenkins pipeline.
+      # If you ever switch to a self-hosted Windows runner,
+      # swap the block below to run log_analyzer.ps1 instead.
+      #
+      # isUnix() equivalent: [ "$(uname)" = "Linux" ]
+      # GitHub-hosted runners: always Linux → always .sh
       # ─────────────────────────────────────────────────
       - name: Log Analysis
         id: log_analysis
         run: |
+          # ── OS detection (mirrors Jenkins isUnix() pattern) ──
+          if [ "$(uname)" = "Linux" ] || [ "$(uname)" = "Darwin" ]; then
+            RUNNER_OS_TYPE="unix"
+          else
+            RUNNER_OS_TYPE="windows"
+          fi
+          echo "Runner OS type: ${RUNNER_OS_TYPE}"
+
+          # Create local reports dir to receive the stats file
           mkdir -p reports
 
-          echo "🐧 Unix runner — running log_analyzer.sh on EC2"
+          if [ "$RUNNER_OS_TYPE" = "unix" ]; then
+            echo "🐧 Unix runner — running log_analyzer.sh remotely on EC2"
 
-          scp -i /tmp/devops-demo-keypair.pem \
-            -o StrictHostKeyChecking=no \
-            log_analyzer.sh \
-            ubuntu@${EC2_IP}:/home/ubuntu/log_analyzer.sh
+            # Copy the analyzer script to EC2
+            if [ "$RUNNER_OS_TYPE" = "unix" ]; then
+            echo "🐧 Unix runner — running log_analyzer.sh remotely on EC2"
 
-          ssh -i /tmp/devops-demo-keypair.pem \
-            -o StrictHostKeyChecking=no \
-            ubuntu@${EC2_IP} \
-            "
-              chmod +x /home/ubuntu/log_analyzer.sh &&
-              export CONTAINER_NAME='${CONTAINER_NAME}' &&
-              export ALERT_EMAIL='${ALERT_EMAIL}' &&
-              export WORKSPACE='/home/ubuntu' &&
-              export BUILD_URL='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}' &&
-              export JOB_NAME='${{ github.workflow }}' &&
-              export BUILD_NUMBER='${{ github.run_number }}' &&
-              /home/ubuntu/log_analyzer.sh
-            "
-          LOG_EXIT=$?
+            # Copy script
+            scp -i /tmp/devops-demo-keypair.pem \
+                -o StrictHostKeyChecking=no \
+                log_analyzer.sh \
+                ubuntu@${EC2_IP}:/home/ubuntu/log_analyzer.sh
 
-          scp -i /tmp/devops-demo-keypair.pem \
-            -o StrictHostKeyChecking=no \
-            "ubuntu@${EC2_IP}:/home/ubuntu/reports/log_stats_*.txt" \
-            reports/ 2>/dev/null || echo "No stats report to copy"
+            # Execute script remotely (NO HEREDOC)
+            ssh -i /tmp/devops-demo-keypair.pem \
+                -o StrictHostKeyChecking=no \
+                ubuntu@${EC2_IP} "
+                  chmod +x /home/ubuntu/log_analyzer.sh &&
+                  export CONTAINER_NAME='${CONTAINER_NAME}' &&
+                  export ALERT_EMAIL='${ALERT_EMAIL}' &&
+                  export WORKSPACE='/home/ubuntu' &&
+                  export BUILD_URL='https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}' &&
+                  export JOB_NAME='${{ github.workflow }}' &&
+                  export BUILD_NUMBER='${{ github.run_number }}' &&
+                  /home/ubuntu/log_analyzer.sh
+                "
+
+            LOG_EXIT=$?
+
+          else
+            echo "🪟 Windows runner — would run log_analyzer.ps1"
+            LOG_EXIT=0
+          fi
+
+            
+
+            # Copy the generated stats report back to the runner
+            scp -i /tmp/devops-demo-keypair.pem \
+                -o StrictHostKeyChecking=no \
+                "ubuntu@${EC2_IP}:/home/ubuntu/reports/log_stats_*.txt" \
+                reports/ 2>/dev/null || echo "No stats report found to copy"
+          else
+            # ── Windows self-hosted runner path ──
+            echo "🪟 Windows runner — would run log_analyzer.ps1"
+            echo "Switch runner to ubuntu-latest or use a Linux self-hosted runner."
+            LOG_EXIT=0
+          fi
 
           echo "log_exit=${LOG_EXIT}" >> $GITHUB_OUTPUT
 
+          # Map log analyzer exit codes to workflow result
           if [ "$LOG_EXIT" = "3" ]; then
+            echo "🔴 Critical errors found — deployment blocked"
             echo "pipeline_status=failure" >> $GITHUB_OUTPUT
-            echo "🔴 Critical errors — deployment blocked"
             exit 1
           elif [ "$LOG_EXIT" = "2" ]; then
+            echo "🟡 Warnings exceeded threshold"
             echo "pipeline_status=unstable" >> $GITHUB_OUTPUT
-            echo "🟡 Warnings found"
+            # Don't exit 1 — deployment is allowed, but we mark unstable
           else
-            echo "pipeline_status=success" >> $GITHUB_OUTPUT
             echo "✅ Log analysis passed"
+            echo "pipeline_status=success" >> $GITHUB_OUTPUT
           fi
 
       # ─────────────────────────────────────────────────
@@ -179,23 +445,24 @@ jobs:
       - name: Verify Deployment
         if: success()
         run: |
+          echo "✅ Verifying deployment on EC2..."
           ssh -i /tmp/devops-demo-keypair.pem \
-            -o StrictHostKeyChecking=no \
-            ubuntu@${EC2_IP} \
-            "
-              echo '── Running containers ──'
-              docker ps | grep devops-app || echo '⚠️ Container not found'
-              echo ''
-              echo '── Last 20 log lines ──'
-              docker logs devops-app --tail=20 2>&1 || true
-              echo ''
-              echo '── Reports directory ──'
-              ls -lh /home/ubuntu/reports/ 2>/dev/null || echo 'No reports'
-            "
-          echo "🌐 App live at http://${EC2_IP}:${APP_PORT}"
+              -o StrictHostKeyChecking=no \
+              ubuntu@${EC2_IP} << 'ENDSSH'
+            echo "── Running containers ──"
+            docker ps | grep devops-app || echo "⚠️ Container not found in docker ps"
+
+            echo ""
+            echo "── Last 20 log lines ──"
+            docker logs devops-app --tail=20 2>&1 || echo "Could not read logs"
+
+            echo ""
+            echo "── Reports directory ──"
+            ls -lh /home/ubuntu/reports/ 2>/dev/null || echo "No reports directory"
+          ENDSSH
 
       # ─────────────────────────────────────────────────
-      # Upload Stats Report
+      # Upload stats report as GitHub Actions artifact
       # ─────────────────────────────────────────────────
       - name: Upload Log Stats Report
         uses: actions/upload-artifact@v4
@@ -213,14 +480,14 @@ jobs:
         if: success() && steps.log_analysis.outputs.pipeline_status == 'success'
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: smtp.gmail.com
-          server_port:    465
-          secure:         true
-          username:       ${{ secrets.SMTP_USERNAME }}
-          password:       ${{ secrets.SMTP_PASSWORD }}
-          to:             ${{ secrets.ALERT_EMAIL }}
-          from:           GitHub Actions <${{ secrets.SMTP_USERNAME }}>
-          subject:        "✅ [SUCCESS] Pipeline Passed — ${{ github.workflow }} #${{ github.run_number }}"
+          server_address:   smtp.gmail.com
+          server_port:      465
+          secure:           true
+          username:         ${{ secrets.SMTP_USERNAME }}
+          password:         ${{ secrets.SMTP_PASSWORD }}
+          to:               ${{ secrets.ALERT_EMAIL }}
+          from:             GitHub Actions <${{ secrets.SMTP_USERNAME }}>
+          subject:          "✅ [SUCCESS] Pipeline Passed — ${{ github.workflow }} #${{ github.run_number }}"
           html_body: |
             <h2>✅ Pipeline Succeeded</h2>
             <table cellpadding="6" style="border-collapse:collapse; font-family:sans-serif;">
@@ -229,56 +496,56 @@ jobs:
               <tr><td><b>Branch</b></td><td>${{ github.ref_name }}</td></tr>
               <tr><td><b>Commit</b></td><td>${{ github.sha }}</td></tr>
               <tr><td><b>Container</b></td><td>devops-app</td></tr>
-              <tr><td><b>App URL</b></td><td><a href="http://${{ secrets.EC2_HOST }}:8081">http://${{ secrets.EC2_HOST }}:8081</a></td></tr>
+              <tr><td><b>App URL</b></td><td><a href="http://${{ needs.terraform.outputs.ec2_ip }}:8081">http://${{ needs.terraform.outputs.ec2_ip }}:8081</a></td></tr>
               <tr><td><b>Run URL</b></td><td><a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Run</a></td></tr>
             </table>
             <p>✅ Health check passed. Log analysis passed. Deployment is live.</p>
-            <p>See attached stats report for full details.</p>
+            <p>See attached stats report for full log analysis details.</p>
           attachments: reports/log_stats_*.txt
 
       # ─────────────────────────────────────────────────
-      # Email — UNSTABLE
+      # Email — UNSTABLE (warnings only)
       # ─────────────────────────────────────────────────
       - name: Email Alert — UNSTABLE
         if: steps.log_analysis.outputs.pipeline_status == 'unstable'
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: smtp.gmail.com
-          server_port:    465
-          secure:         true
-          username:       ${{ secrets.SMTP_USERNAME }}
-          password:       ${{ secrets.SMTP_PASSWORD }}
-          to:             ${{ secrets.ALERT_EMAIL }}
-          from:           GitHub Actions <${{ secrets.SMTP_USERNAME }}>
-          subject:        "🟡 [WARNING] Pipeline Unstable — ${{ github.workflow }} #${{ github.run_number }}"
+          server_address:   smtp.gmail.com
+          server_port:      465
+          secure:           true
+          username:         ${{ secrets.SMTP_USERNAME }}
+          password:         ${{ secrets.SMTP_PASSWORD }}
+          to:               ${{ secrets.ALERT_EMAIL }}
+          from:             GitHub Actions <${{ secrets.SMTP_USERNAME }}>
+          subject:          "🟡 [WARNING] Pipeline Unstable — ${{ github.workflow }} #${{ github.run_number }}"
           html_body: |
             <h2>🟡 Pipeline Unstable — Warnings Found</h2>
             <table cellpadding="6" style="border-collapse:collapse; font-family:sans-serif;">
               <tr><td><b>Workflow</b></td><td>${{ github.workflow }}</td></tr>
               <tr><td><b>Run</b></td><td>#${{ github.run_number }}</td></tr>
               <tr><td><b>Branch</b></td><td>${{ github.ref_name }}</td></tr>
-              <tr><td><b>App URL</b></td><td><a href="http://${{ secrets.EC2_HOST }}:8081">http://${{ secrets.EC2_HOST }}:8081</a></td></tr>
+              <tr><td><b>App URL</b></td><td><a href="http://${{ needs.terraform.outputs.ec2_ip }}:8081">http://${{ needs.terraform.outputs.ec2_ip }}:8081</a></td></tr>
               <tr><td><b>Run URL</b></td><td><a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Run</a></td></tr>
             </table>
-            <p>🟡 Warnings exceeded threshold. Deployment allowed but review needed.</p>
-            <p>See attached stats report for full details.</p>
+            <p>🟡 Warning threshold exceeded. Deployment allowed but team review needed.</p>
+            <p>See attached stats report for full log analysis details.</p>
           attachments: reports/log_stats_*.txt
 
       # ─────────────────────────────────────────────────
-      # Email — FAILURE
+      # Email — FAILURE (on any job failure)
       # ─────────────────────────────────────────────────
       - name: Email Alert — FAILURE
         if: failure()
         uses: dawidd6/action-send-mail@v3
         with:
-          server_address: smtp.gmail.com
-          server_port:    465
-          secure:         true
-          username:       ${{ secrets.SMTP_USERNAME }}
-          password:       ${{ secrets.SMTP_PASSWORD }}
-          to:             ${{ secrets.ALERT_EMAIL }}
-          from:           GitHub Actions <${{ secrets.SMTP_USERNAME }}>
-          subject:        "🔴 [CRITICAL] Pipeline FAILED — ${{ github.workflow }} #${{ github.run_number }}"
+          server_address:   smtp.gmail.com
+          server_port:      465
+          secure:           true
+          username:         ${{ secrets.SMTP_USERNAME }}
+          password:         ${{ secrets.SMTP_PASSWORD }}
+          to:               ${{ secrets.ALERT_EMAIL }}
+          from:             GitHub Actions <${{ secrets.SMTP_USERNAME }}>
+          subject:          "🔴 [CRITICAL] Pipeline FAILED — ${{ github.workflow }} #${{ github.run_number }}"
           html_body: |
             <h2>🔴 Pipeline Failed — Deployment Blocked</h2>
             <table cellpadding="6" style="border-collapse:collapse; font-family:sans-serif;">
@@ -289,14 +556,15 @@ jobs:
               <tr><td><b>Run URL</b></td><td><a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}">View Failed Run</a></td></tr>
             </table>
             <p>🔴 Pipeline failed. Automatic rollback triggered on EC2.</p>
-            <p>Fix errors and push to main to re-trigger.</p>
+            <p>Fix errors and push to main to re-trigger the pipeline.</p>
+            <p>See attached stats report for log analysis details (if available).</p>
           attachments: reports/log_stats_*.txt
 
       # ─────────────────────────────────────────────────
-      # Cleanup
+      # Cleanup — always remove the temp PEM key from runner
       # ─────────────────────────────────────────────────
       - name: Cleanup PEM Key
         if: always()
         run: |
           rm -f /tmp/devops-demo-keypair.pem
-          echo "🔑 PEM key removed"
+          echo "🔑 PEM key removed from runner"
