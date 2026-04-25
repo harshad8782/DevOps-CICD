@@ -876,10 +876,6 @@ Developer pushes code
 - [x] Health check after deployment ✅
 - [x] Automated log analysis — Bash + PowerShell ✅
 - [x] Stats report auto-generated and attached to email ✅
-- [ ] Deploy to AWS EC2 via GitHub Actions SSH
-- [ ] Canary deployment strategy
-- [ ] Monitoring with Prometheus + Grafana
-- [ ] Kubernetes deployment with Helm charts
 - [ ] Infrastructure as Code with Terraform
 
 ---
