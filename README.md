@@ -1,4 +1,4 @@
-# 🚀 DevOps CI/CD Pipeline Demo
+# 🚀 DevOps CI/CD Pipeline
 
 > A complete end-to-end **DevOps CI/CD pipeline** built with Spring Boot, Docker, GitHub Actions, Terraform, and AWS — demonstrating automated build, containerization, cloud infrastructure provisioning, deployment workflows, production-grade log analysis, code quality gates, security scanning, and email alerting.
 
@@ -35,8 +35,6 @@ Developer → GitHub Push
     🔴 Fail  → Auto Rollback + Email Alert + Stats Report
 ```
 
-**What was used:**
-
 | Tool | Role |
 |------|------|
 | GitHub Actions | CI only — build, test, quality, push |
@@ -44,13 +42,6 @@ Developer → GitHub Push
 | Docker Hub | Image registry |
 | Bash / PowerShell | Log analysis with OS detection via `isUnix()` |
 | Email (SMTP via Jenkins) | Pipeline alerts with stats report attached |
-
-**Limitations of Phase 1:**
-- Jenkins had to be running locally at all times
-- No cloud infrastructure — everything was `localhost`
-- Docker Hub used instead of a private cloud registry
-- Manual Jenkins setup and configuration required
-- No infrastructure-as-code — server setup was manual
 
 ---
 
@@ -64,16 +55,14 @@ Developer → GitHub Push to main
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     Checkout → Maven Build → JUnit Tests
                 ↓
-    JaCoCo Coverage Report (uploaded as artifact)
-                ↓
-    SonarCloud Quality Gate
+    JaCoCo Coverage → SonarCloud Quality Gate
                 ↓
     Configure AWS → Login to ECR
                 ↓
     Docker Build → Trivy Security Scan
                 ↓
     Push versioned image to Amazon ECR
-    (e.g. devops-demo:v1.71.0 + devops-demo:latest)
+    (devops-demo:v1.71.0 + devops-demo:latest)
                 ↓
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
          cd.yml — GitHub Actions CD
@@ -81,56 +70,24 @@ Developer → GitHub Push to main
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 ↓
     JOB 1 — Terraform Provision Infrastructure
-                ↓
-    terraform init (S3 remote state backend)
-    terraform plan → terraform apply
-                ↓
-    AWS Resources Created / Updated:
-      ├── TLS Key Pair (RSA 4096) → .pem written to disk
-      ├── AWS Key Pair registered
-      ├── IAM Role + Instance Profile (ECR read access)
-      ├── Security Group (ports 22, 80, 8081)
-      ├── EC2 Instance (Ubuntu 24.04, userdata installs Docker + AWS CLI)
-      └── Elastic IP (stable public IP)
-                ↓
-    Extract EC2 IP + PEM key from Terraform outputs
-    (PEM base64-encoded → passed to deploy job securely)
-                ↓
-    Wait for EC2 SSH to open (port 22 check)
+      ├── terraform init (S3 remote state)
+      ├── Clean stale IAM resources
+      ├── terraform plan → terraform apply
+      ├── Creates: Key Pair, IAM Role, Security Group,
+      │           EC2 Instance, Elastic IP
+      └── Extract EC2 IP + PEM key from outputs
                 ↓
     JOB 2 — Deploy → Health Check → Log Analysis → Email
-                ↓
-    Write PEM key to runner filesystem
-                ↓
-    Wait for Docker + AWS CLI ready on EC2
-    (polls every 15s, breaks as soon as both respond)
-                ↓
-    Fetch latest versioned image tag from ECR
-                ↓
-    SSH into EC2 → ECR login via IAM Role → docker pull
-                ↓
-    Save current container version → Stop old → Run new
-    (auto rollback if docker run fails)
-                ↓
-    Health Check — curl http://EC2_IP:8081
-    (retry 5 times × 10s — rollback on failure)
-                ↓
-    OS Detection (mirrors Jenkins isUnix() pattern):
-      uname = Linux/Darwin → log_analyzer.sh   ← always on GitHub runners
-      uname = Windows      → log_analyzer.ps1  ← self-hosted Windows runner
-                ↓
-    SCP log_analyzer.sh to EC2 → Run remotely
-                ↓
-    Scans last 500 lines of container logs
-      ├── exit 0 → ✅ SUCCESS  → email + stats.txt attached
-      ├── exit 2 → 🟡 UNSTABLE → email + stats.txt attached
-      └── exit 3 → 🔴 FAILURE  → deployment blocked + email + stats.txt
-                ↓
-    SCP stats report back to runner → Upload as artifact
-                ↓
-    Verify Deployment (docker ps + docker logs)
-                ↓
-    Cleanup PEM key from runner filesystem
+      ├── Write PEM key to runner
+      ├── Wait for Docker + AWS CLI ready on EC2
+      ├── Fetch latest versioned tag from ECR
+      ├── SSH → ECR login → docker pull → docker run
+      ├── Auto rollback if deploy fails
+      ├── Health check (5 retries × 10s) → rollback on fail
+      ├── OS detection → run log_analyzer.sh on EC2
+      ├── Copy stats report back → upload as artifact
+      ├── Send email alert with report attached
+      └── Cleanup PEM key from runner
 ```
 
 ---
@@ -152,9 +109,9 @@ Developer → GitHub Push to main
 | Amazon ECR | Private Docker image registry |
 | Amazon EC2 | Cloud server running the application |
 | Amazon S3 | Terraform remote state storage (versioned) |
-| AWS IAM | EC2 role with ECR read access |
-| Bash Scripting | Log analysis & DevOps automation |
-| PowerShell | Log analysis for Windows runners |
+| AWS IAM | EC2 role with ECR read access (no hardcoded keys) |
+| Bash Scripting | Log analysis & DevOps automation (Linux) |
+| PowerShell | Log analysis & DevOps automation (Windows) |
 | Email (SMTP / Gmail) | Pipeline alert notifications |
 
 ---
@@ -187,80 +144,218 @@ DevOps-CICD/
 
 ---
 
-## ☁️ AWS Infrastructure (Terraform-Managed)
+## ⚙️ CI/CD Pipeline Workflow
 
-All infrastructure is created and managed by Terraform. No manual AWS console setup required.
+### Step 1 — Code Commit & Push
+
+```bash
+git add .
+git commit -m "Add GitHub Actions CI/CD with Terraform"
+git push origin main
+```
+
+📸 **Git Commit & Push:**
+
+![Git Commit](screenshots/git_commit.png)
+
+---
+
+### Step 2 — GitHub Actions CI Triggers Automatically
+
+On every push to `main`, the full CI pipeline runs automatically:
 
 ```
-Amazon S3 (tfstate-bucket-harshad)
-    └── devops-demo/terraform.tfstate   ← Remote state, versioned
+Checkout → Build → Unit Tests → Coverage → SonarCloud → Docker Build → Trivy → Push to ECR
+```
 
-Amazon ECR (devops-demo)
-    ├── devops-demo:latest
-    ├── devops-demo:v1.71.0
-    ├── devops-demo:v1.70.0
-    └── ...versioned history
+📸 **GitHub Actions CI Pipeline — Success (#71, 2m 10s):**
 
-Amazon EC2 (devops-demo-server)
-    ├── AMI: Ubuntu 24.04 (ap-south-1)
-    ├── Instance type: t3.micro
-    ├── Security Group: ports 22, 80, 8081
-    ├── IAM Role: ECR read access (no hardcoded credentials)
-    ├── Elastic IP: stable public IP across reboots
-    └── userdata.sh: Docker + AWS CLI auto-installed at boot
+![CI GitHub Actions](screenshots/ci_github_action.png)
 
-AWS Key Pair
-    └── devops-demo-keypair.pem (generated by Terraform, used by CD workflow)
+---
+
+### Step 3 — Unit Tests — JUnit
+
+Every push runs all JUnit tests automatically. Build is blocked if any test fails.
+
+```
+✅ contextLoads
+✅ testHelloEndpoint
 ```
 
 ---
 
-## 🔍 Automated Log Analysis
+### Step 4 — Code Coverage — JaCoCo
 
-Two versions of the log analyzer are included — `log_analyzer.sh` for Linux/Mac and `log_analyzer.ps1` for Windows. Both do exactly the same job in their respective scripting languages.
+JaCoCo generates a full coverage report after tests run. Report is uploaded as a GitHub Actions artifact.
 
-The pipeline **automatically detects the OS** at runtime — mirroring the `isUnix()` pattern from Jenkins — and runs the correct script without any manual changes.
+📸 **JaCoCo Coverage Report:**
 
-**How it works:**
+![JaCoCo](screenshots/jacoco.png)
 
 ```
-Container starts on EC2
-        ↓
-GitHub Actions runner detects OS:
-    [ "$(uname)" = "Linux" ]  →  log_analyzer.sh   ✅ always on cloud runners
-    [ "$(uname)" = "Windows" ] → log_analyzer.ps1  ← self-hosted Windows runner
-        ↓
-SCP script to EC2 → Run remotely → SCP report back
-        ↓
-Fetches last 500 lines from docker logs
-        ↓
-Scans for ERROR, FATAL, CRITICAL, EXCEPTION  → threshold: 5
-Scans for WARN, WARNING, DEPRECATED          → threshold: 10
-        ↓
-        ├── All clean      → exit 0 → ✅ SUCCESS  → email + stats.txt
-        ├── Warnings only  → exit 2 → 🟡 UNSTABLE → email + stats.txt
-        └── Critical found → exit 3 → 🔴 FAILURE  → deployment blocked + email + stats.txt
+Coverage    : 46%
+Lines       : 5 total, 3 covered
+Methods     : 4 total, 2 covered
+Classes     : 2 total, 2 covered
 ```
 
-**Pipeline decision table:**
+---
 
-| Result | Exit Code | Status | Action |
-|---|---|---|---|
-| No issues | 0 | ✅ SUCCESS | Deployment live, email + report sent |
-| Warnings > threshold | 2 | 🟡 UNSTABLE | Deploy allowed, team emailed with report |
-| Critical errors > threshold | 3 | 🔴 FAILURE | Deployment blocked, team emailed with report |
+### Step 5 — Code Quality Gate — SonarCloud
 
-**Bash vs PowerShell — same logic, different platform:**
+Every push is automatically scanned by SonarCloud for bugs, vulnerabilities, code smells, and coverage.
 
-| Concept | Bash (`log_analyzer.sh`) | PowerShell (`log_analyzer.ps1`) |
-|---|---|---|
-| Variable | `VAR="value"` | `$VAR = "value"` |
-| Environment var | `${VAR:-default}` | `if ($env:VAR) { $env:VAR }` |
-| Pattern match | `grep -i -c "pattern"` | `Select-String -Pattern "pattern"` |
-| Write file | `echo "text" >> file` | `"text" \| Out-File -Append` |
-| Exit code | `exit 3` | `exit 3` |
+📸 **SonarCloud Dashboard:**
 
-**OS detection — Jenkins vs GitHub Actions:**
+![SonarCloud](screenshots/sonarqube.png)
+
+```
+Quality Gate    : ✅ Passed
+Security        : A
+Reliability     : A
+Maintainability : A
+Coverage        : 60%
+Duplications    : 0%
+Hotspots        : 100% Reviewed
+```
+
+---
+
+### Step 6 — Security Scan — Trivy
+
+Docker image is scanned for CRITICAL and HIGH vulnerabilities before pushing to ECR.
+
+📸 **Trivy Security Report:**
+
+![Trivy](screenshots/trivy_report.png)
+
+```
+Target             : devops-demo:latest (ubuntu 24.04)
+Vulnerabilities    : 0 ✅
+Secrets            : None detected ✅
+app.jar            : 0 vulnerabilities ✅
+```
+
+---
+
+### Step 7 — Versioned Docker Image Pushed to Amazon ECR
+
+Every build pushes two tags — versioned and latest. ECR keeps a full history of all versions.
+
+```bash
+devops-demo:v1.71.0   ← versioned tag (matches github.run_number)
+devops-demo:latest    ← always points to newest
+```
+
+📸 **Amazon ECR Repository — Versioned Image History:**
+
+![ECR Images](screenshots/aws_ecr_image.png)
+
+---
+
+### Step 8 — Terraform Provisions AWS Infrastructure
+
+Before deploying, Terraform creates or updates all cloud infrastructure automatically. State is stored remotely in S3 so it persists across runs.
+
+📸 **S3 Bucket Created for Terraform State:**
+
+![S3 tfstate Console](screenshots/s3_tfstate_console.png)
+
+📸 **S3 Versioning Enabled on State Bucket:**
+
+![S3 Versioning](screenshots/s3_tfstate_version.png)
+
+📸 **S3 Bucket — tfstate-bucket-harshad — devops-demo/ folder:**
+
+![S3 Console](screenshots/s3_console.png)
+
+📸 **terraform.tfstate stored in S3 (31.9 KB):**
+
+![tfstate file](screenshots/s3_tfstate.png)
+
+**AWS Resources Terraform manages:**
+
+```
+Amazon S3
+    └── tfstate-bucket-harshad/devops-demo/terraform.tfstate
+
+Amazon ECR
+    └── devops-demo repository (versioned images)
+
+Amazon EC2
+    ├── Ubuntu 24.04, t3.micro, ap-south-1
+    ├── IAM Role: AmazonEC2ContainerRegistryReadOnly
+    ├── Security Group: ports 22, 80, 8081
+    ├── Elastic IP: stable public IP
+    └── userdata.sh: Docker + AWS CLI at boot
+
+AWS Key Pair
+    └── devops-demo-keypair.pem (Terraform-generated, RSA 4096)
+```
+
+---
+
+### Step 9 — EC2 Ready — Docker + AWS CLI Installed
+
+`userdata.sh` runs automatically at EC2 boot. The CD pipeline polls until both Docker and AWS CLI confirm ready before proceeding to deploy.
+
+📸 **EC2 Setup Complete — Docker and AWS CLI Ready:**
+
+![EC2 Ready](screenshots/ec2_ready.png)
+
+```
+✅ EC2 ready — Docker and AWS CLI installed
+✅ Deployment will be triggered by GitHub Actions CD workflow
+Docker version 29.4.1
+aws-cli/2.34.36
+```
+
+---
+
+### Step 10 — CD Pipeline Deploys to EC2
+
+After Terraform finishes and EC2 is ready, the deploy job SSHs in using the Terraform-generated `.pem` key, pulls the verified image from ECR via IAM role (no hardcoded credentials), and starts the container.
+
+📸 **GitHub Actions CD Pipeline — All Stages Green (#17, 1m 42s):**
+
+![CD GitHub Actions](screenshots/cd_github_action.png)
+
+```
+✅ Terraform — Provision Infrastructure   44s
+✅ Deploy → Health Check → Log Analysis   51s
+Total duration: 1m 42s
+```
+
+**Jenkins Pipeline Stages (Phase 1 — for reference):**
+
+📸 **Jenkins Pipeline — All Stages Green:**
+
+![Jenkins Pipeline](screenshots/jenkins.png)
+
+---
+
+### Step 11 — Auto Rollback on Failure
+
+Before deploying, the pipeline saves the current running image version. If deployment or health check fails after 5 retries, the previous version is automatically restored.
+
+```
+Save current container image version
+        ↓
+Deploy new version
+        ↓
+Health Check — retry 5 times × 10s
+        ├── ✅ Healthy → proceed to log analysis
+        └── ❌ Failed  → auto rollback to previous image
+```
+
+---
+
+### Step 12 — Log Analysis Runs Automatically
+
+After the container passes the health check, `log_analyzer.sh` is SCP'd to EC2, executed remotely, and the stats report is copied back to the GitHub Actions runner and uploaded as an artifact (14-day retention).
+
+**isUnix() — Jenkins vs GitHub Actions:**
 
 ```groovy
 // Jenkins (Groovy)
@@ -274,11 +369,23 @@ if (isUnix()) {
 ```bash
 # GitHub Actions (Bash — equivalent logic)
 if [ "$(uname)" = "Linux" ] || [ "$(uname)" = "Darwin" ]; then
-    # run log_analyzer.sh
+    # SCP + run log_analyzer.sh on EC2
 else
-    # run log_analyzer.ps1
+    # run log_analyzer.ps1 (Windows self-hosted runner)
 fi
 ```
+
+📸 **Success Email Received:**
+
+![Email Alert](screenshots/mail.png)
+
+📸 **Stats Report Attached to Email:**
+
+![Stats Report](screenshots/attachment.png)
+
+📸 **Critical Failure Email — Deployment Blocked:**
+
+![Fail Email](screenshots/fail_mail.png)
 
 **Sample stats report:**
 
@@ -288,22 +395,18 @@ fi
 ====================================================
 Generated     : 2026-04-24 20:20:40
 Container     : devops-app
-Jenkins Job   : CD — Terraform Infra + Deploy to EC2
+Job           : CD — Terraform Infra + Deploy to EC2
 Build Number  : #17
 Lines Scanned : 500
 ====================================================
 
---------------------------------------------------
   CRITICAL ERROR PATTERNS  (threshold: 5)
---------------------------------------------------
   ERROR     : 0 occurrences
   FATAL     : 0 occurrences
   CRITICAL  : 0 occurrences
   EXCEPTION : 0 occurrences
 
---------------------------------------------------
   WARNING PATTERNS  (threshold: 10)
---------------------------------------------------
   WARN       : 0 occurrences
   WARNING    : 0 occurrences
   DEPRECATED : 0 occurrences
@@ -311,130 +414,68 @@ Lines Scanned : 500
 ====================================================
   PIPELINE DECISION SUMMARY
 ====================================================
-Status          : PASSED
-Action          : All checks passed. Deployment is proceeding.
+Status   : PASSED
+Action   : All checks passed. Deployment is proceeding.
 ====================================================
 ```
 
 ---
 
-## ⚙️ CI/CD Pipeline Workflow
-
-### Step 1 — Code Commit & Push
-
-```bash
-git add .
-git commit -m "Feature update"
-git push origin main
-```
-
----
-
-### Step 2 — CI Pipeline Triggers (ci.yml)
-
-On every push to `main`, the full CI pipeline runs automatically in GitHub Actions:
-
-```
-Checkout → Maven Build → JUnit Tests → JaCoCo Coverage
-    → SonarCloud Quality Gate → ECR Login → Docker Build
-    → Trivy Security Scan → Push to ECR
-```
-
-**Unit Tests — JUnit:**
-```
-✅ contextLoads
-✅ testHelloEndpoint
-```
-
-**Code Coverage — JaCoCo:**
-```
-Coverage    : 46%
-Lines       : 5 total, 3 covered
-Methods     : 4 total, 2 covered
-Classes     : 2 total, 2 covered
-```
-
-**Code Quality — SonarCloud:**
-```
-Quality Gate    : ✅ Passed
-Security        : A
-Reliability     : A
-Maintainability : A
-Coverage        : 60%
-Duplications    : 0%
-Hotspots        : 100% Reviewed
-```
-
-**Security Scan — Trivy:**
-```
-Target             : devops-demo:latest (ubuntu 24.04)
-Vulnerabilities    : 0 ✅
-Secrets            : None detected ✅
-app.jar            : 0 vulnerabilities ✅
-```
-
-**Versioned image pushed to ECR:**
-```bash
-devops-demo:v1.71.0   ← versioned tag
-devops-demo:latest    ← always points to newest
-```
-
----
-
-### Step 3 — CD Pipeline Triggers Automatically (cd.yml)
-
-Triggered by `workflow_run` on CI success — no manual steps needed.
-
-**Job 1 — Terraform Provision Infrastructure:**
-- `terraform init` with S3 remote backend (`tfstate-bucket-harshad`)
-- Cleans up any stale IAM resources from previous runs
-- `terraform plan` → `terraform apply`
-- Extracts EC2 public IP + PEM key from outputs
-- Waits for SSH port to open
-
-**Job 2 — Deploy → Health Check → Log Analysis → Email:**
-- Writes PEM key securely to runner (`chmod 400`)
-- Polls EC2 until Docker and AWS CLI are both ready
-- Fetches latest versioned image tag from ECR
-- SSH into EC2 → ECR login via IAM role → `docker pull`
-- Saves current version → stops old container → starts new
-- Auto rollback if `docker run` fails
-- Health check: `curl http://EC2_IP:8081` — 5 retries × 10s
-- Auto rollback if health check fails
-- Runs log analysis remotely on EC2 (via SCP + SSH)
-- Copies stats report back to runner
-- Uploads stats report as GitHub Actions artifact (14 day retention)
-- Sends email alert with stats report attached
-- Cleans up PEM key from runner
-
----
-
-### Step 4 — Auto Rollback on Failure
-
-```
-Save current container image version
-        ↓
-Deploy new version
-        ↓
-Health Check — retry 5 times × 10s
-        ├── ✅ Healthy → proceed to log analysis
-        └── ❌ Failed  → auto rollback to previous image
-                ↓
-Log Analysis
-        ├── exit 0 → ✅ proceed
-        ├── exit 2 → 🟡 proceed with warning email
-        └── exit 3 → 🔴 deployment blocked
-```
-
----
-
-### Step 5 — Application Live on EC2
+### Step 13 — Application Live on EC2
 
 ```
 http://<EC2_ELASTIC_IP>:8081
 ```
 
+📸 **Application Live in Browser:**
+
+![Browser Output](screenshots/browser_output.png)
+
 > ✅ **"DevOps CI/CD Pipeline Working!"**
+
+---
+
+## 🔍 Automated Log Analysis
+
+**How it works:**
+
+```
+Container starts on EC2
+        ↓
+GitHub Actions runner detects OS (mirrors Jenkins isUnix()):
+    Linux/Darwin  →  log_analyzer.sh   ✅ always on GitHub cloud runners
+    Windows       →  log_analyzer.ps1  ← self-hosted Windows runner
+        ↓
+SCP script to EC2 → Execute remotely → SCP stats report back
+        ↓
+Fetches last 500 lines from docker logs
+        ↓
+Scans for ERROR, FATAL, CRITICAL, EXCEPTION  → threshold: 5
+Scans for WARN, WARNING, DEPRECATED          → threshold: 10
+        ↓
+        ├── All clean      → exit 0 → ✅ SUCCESS  → email + stats.txt
+        ├── Warnings only  → exit 2 → 🟡 UNSTABLE → email + stats.txt
+        └── Critical found → exit 3 → 🔴 FAILURE  → blocked + email + stats.txt
+```
+
+**Pipeline decision table:**
+
+| Result | Exit Code | Status | Action Taken |
+|---|---|---|---|
+| No issues found | 0 | ✅ SUCCESS | Deployment live, email + report sent |
+| Warnings > threshold | 2 | 🟡 UNSTABLE | Deploy allowed, team emailed with report |
+| Critical errors > threshold | 3 | 🔴 FAILURE | Deployment blocked, team emailed with report |
+
+**Bash vs PowerShell — same logic, different platform:**
+
+| Concept | Bash (`log_analyzer.sh`) | PowerShell (`log_analyzer.ps1`) |
+|---|---|---|
+| Variable | `VAR="value"` | `$VAR = "value"` |
+| Environment var | `${VAR:-default}` | `if ($env:VAR) { $env:VAR }` |
+| Function | `myFunc() { }` | `function My-Func { }` |
+| Pattern match | `grep -i -c "pattern"` | `Select-String -Pattern "pattern"` |
+| Write file | `echo "text" >> file` | `"text" \| Out-File -Append` |
+| Exit code | `exit 3` | `exit 3` |
 
 ---
 
@@ -463,54 +504,78 @@ Reduction           →  56% smaller ✅
 
 ---
 
-## 🔄 CI Pipeline — ci.yml
-
-```yaml
-on:
-  push:
-    branches: [main]
-
-# Steps:
-# Checkout → Java 17 → Maven Build → JUnit Tests
-# → JaCoCo Report → SonarCloud → AWS Credentials
-# → ECR Login → Set Version Tag → Docker Build
-# → Trivy Scan → Push to ECR (versioned + latest)
-```
-
-Full file: `.github/workflows/ci.yml`
-
----
-
-## 🏗️ CD Pipeline — cd.yml
-
-```yaml
-on:
-  workflow_run:
-    workflows: ["CI — Build, Test, Quality, Push to ECR"]
-    types: [completed]
-    branches: [main]
-  workflow_dispatch:  # manual trigger also supported
-
-jobs:
-  terraform:   # Provision / update AWS infrastructure
-  deploy:      # SSH deploy + health check + log analysis + email
-```
-
-Full file: `.github/workflows/cd.yml`
-
----
-
 ## 💡 CI vs CD — Why Separated?
 
 | | ci.yml (CI) | cd.yml (CD) |
 |---|---|---|
-| **Trigger** | Every `git push` to main | After CI succeeds |
-| **Responsibility** | Build, test, quality, security, push image | Infra provisioning, deploy, verify, alert |
+| **Trigger** | Every `git push` to main | After CI succeeds via `workflow_run` |
+| **Responsibility** | Build, test, quality, security, push | Infra provision, deploy, verify, alert |
 | **Runs on** | GitHub cloud runners | GitHub cloud runners |
 | **Registry** | Pushes to Amazon ECR | Pulls from Amazon ECR |
-| **Output** | Verified versioned Docker image | Running container on EC2 + email |
+| **Output** | Verified versioned Docker image | Running container on EC2 + email alert |
 
 > Separating CI and CD is a real-world best practice — deploy only what has been built, tested, and verified.
+
+---
+
+## 🏭 Production-Grade Pipeline at a Glance
+
+```
+Developer pushes code
+        ↓
+━━━━━━━━━━━━━━━━━━━━━━━━  CI — ci.yml  ━━━━━━━━━━━━━━━━━━━━━━━━
+    Build → Unit Tests (JUnit)                    ✅
+        ↓
+    Code Coverage (JaCoCo)                        ✅
+        ↓
+    Code Quality Gate (SonarCloud) ──FAIL──→ ❌ Block
+        ↓
+    Security Scan (Trivy)                         ✅
+        ↓
+    Build versioned image → ECR                   ✅
+        ↓
+━━━━━━━━━━━━━━━━━━━━━━━━  CD — cd.yml  ━━━━━━━━━━━━━━━━━━━━━━━━
+    Terraform Apply (EC2 + IAM + EIP + S3 state)  ✅
+        ↓
+    Wait for EC2 ready (Docker + AWS CLI)         ✅
+        ↓
+    SSH Deploy with Auto Rollback                 ✅
+        ↓
+    Health Check (retry 5x) ──FAIL──→ 🔴 Auto Rollback
+        ↓
+    Log Analysis (Bash / PowerShell)              ✅
+        ├── exit 0 → ✅ SUCCESS  email + stats report
+        ├── exit 2 → 🟡 UNSTABLE email + stats report
+        └── exit 3 → 🔴 FAILURE  blocked + email + stats report
+        ↓
+    Verify Deployment                             ✅
+        ↓
+    ✅ App live at http://<EC2_ELASTIC_IP>:8081
+```
+
+---
+
+### 🔁 Deployment Strategies
+
+| Strategy | How it works | Risk | Use Case |
+|---|---|---|---|
+| **Recreate** ← used here | Stop old, start new | High — brief downtime | Dev/demo |
+| **Rolling** | Replace instances one by one | Medium | Standard production |
+| **Blue/Green** | Two identical envs, switch traffic | Low | High availability |
+| **Canary** | Release to small % first, then scale | Very Low | Large user base |
+| **Feature Flags** | Code ships, feature toggled per user | Minimal | A/B testing |
+
+---
+
+### 📊 Production Monitoring Stack (Planned)
+
+| Tool | Purpose |
+|---|---|
+| **Prometheus** | Metrics — CPU, memory, request rate, error rate |
+| **Grafana** | Dashboard visualisation |
+| **ELK Stack** | Centralised log collection and search |
+| **AWS CloudWatch** | Cloud-native monitoring for EC2 / containers |
+| **PagerDuty / OpsGenie** | On-call alerts to engineers |
 
 ---
 
@@ -522,82 +587,12 @@ Full file: `.github/workflows/cd.yml`
 | `AWS_SECRET_ACCESS_KEY` | IAM user secret key |
 | `AWS_REGION` | `ap-south-1` |
 | `AWS_ACCOUNT_ID` | 12-digit AWS account ID |
-| `ECR_REPOSITORY` | ECR repository name (`devops-demo`) |
-| `TF_STATE_BUCKET` | S3 bucket for Terraform state (`tfstate-bucket-harshad`) |
+| `ECR_REPOSITORY` | ECR repo name (`devops-demo`) |
+| `TF_STATE_BUCKET` | S3 bucket name (`tfstate-bucket-harshad`) |
 | `SONAR_TOKEN` | SonarCloud project token |
 | `SMTP_USERNAME` | Gmail address for sending alerts |
 | `SMTP_PASSWORD` | Gmail App Password |
-| `ALERT_EMAIL` | Email address to receive pipeline alerts |
-
----
-
-## 🏭 Production-Grade Pipeline Overview
-
-### CI — Continuous Integration
-```
-Code Push
-    ↓
-Build & Compile (Maven)                  ✅
-    ↓
-Unit Tests (JUnit)                       ✅
-    ↓
-Code Coverage (JaCoCo)                   ✅
-    ↓
-Code Quality Gate (SonarCloud)           ✅  ──FAIL──→ ❌ Block
-    ↓
-Security Scan (Trivy)                    ✅
-    ↓
-Build Versioned Image → ECR              ✅
-    ↓
-Release Candidate Ready
-```
-
-### CD — Continuous Delivery
-```
-CI Success
-    ↓
-Terraform Apply (EC2 + ECR + S3 state)   ✅
-    ↓
-Wait for EC2 ready (Docker + AWS CLI)    ✅
-    ↓
-SSH Deploy with Auto Rollback            ✅
-    ↓
-Health Check (retry 5x)                  ✅  ──FAIL──→ 🔴 Auto Rollback
-    ↓
-Log Analysis (Bash / PowerShell)         ✅  ──FAIL──→ 🔴 Block + Email
-    ↓
-Verify Deployment                        ✅
-    ↓
-Email + Stats Report Attached            ✅
-    ↓
-✅ Deployment complete
-```
-
----
-
-### 🔁 Deployment Strategies
-
-| Strategy | How it works | Risk | Use Case |
-|---|---|---|---|
-| **Recreate** | Stop old, start new | High — downtime | Dev/test |
-| **Rolling** | Replace instances one by one | Medium | Standard production |
-| **Blue/Green** | Two identical envs, switch traffic | Low | High availability |
-| **Canary** | Release to small % first, then scale | Very Low | Large user base |
-| **Feature Flags** | Code ships, feature toggled per user | Minimal | A/B testing |
-
-> This project uses **Recreate** strategy with auto rollback — appropriate for single-instance demo. Production upgrade path: Canary on ECS/EKS.
-
----
-
-### 📊 Production Monitoring Stack (Future)
-
-| Tool | Purpose |
-|---|---|
-| **Prometheus** | Metrics — CPU, memory, request rate, error rate |
-| **Grafana** | Dashboard visualisation |
-| **ELK Stack** | Centralised log collection and search |
-| **AWS CloudWatch** | Cloud-native monitoring for EC2 / containers |
-| **PagerDuty / OpsGenie** | On-call alerts to engineers |
+| `ALERT_EMAIL` | Recipient email for pipeline alerts |
 
 ---
 
@@ -612,18 +607,20 @@ Email + Stats Report Attached            ✅
 - [x] Multi-stage Dockerfile (56% smaller) ✅
 - [x] Private image registry — Amazon ECR ✅
 - [x] Infrastructure as Code — Terraform ✅
-- [x] Remote Terraform state — S3 + versioning ✅
+- [x] Remote Terraform state — S3 + versioning enabled ✅
 - [x] EC2 provisioning with Elastic IP ✅
-- [x] IAM Role for EC2 → ECR access (no hardcoded keys) ✅
+- [x] IAM Role for ECR access (no hardcoded credentials) ✅
 - [x] Auto rollback on deployment failure ✅
 - [x] Health check after deployment ✅
 - [x] Automated log analysis — Bash + PowerShell ✅
 - [x] OS detection (mirrors Jenkins `isUnix()`) ✅
 - [x] Stats report auto-generated and attached to email ✅
 - [x] Full GitHub Actions CI + CD (Jenkins removed) ✅
+- [ ] Deploy to multiple environments (staging → production)
+- [ ] Canary deployment strategy
 - [ ] Monitoring with Prometheus + Grafana
 - [ ] Kubernetes deployment with Helm charts
-- [ ] Multi-environment (staging → production)
+- [ ] Infrastructure multi-region support
 
 ---
 
@@ -645,22 +642,25 @@ Open: `http://localhost:8081`
 
 ```bash
 # Docker
-docker ps                                    # running containers
-docker logs devops-app --tail=50            # container logs
+docker ps
+docker logs devops-app --tail=50
 docker stop devops-app && docker rm devops-app
 
 # Terraform (from terraform/ directory)
 terraform init
 terraform plan
 terraform apply
-terraform destroy                            # tear down all infra
+terraform destroy
 
-# AWS ECR
+# AWS ECR — list images
 aws ecr describe-images \
   --repository-name devops-demo \
-  --region ap-south-1                        # list images
+  --region ap-south-1
 
-# AWS EC2
+# AWS S3 — check state
+aws s3 ls s3://tfstate-bucket-harshad/devops-demo/
+
+# AWS EC2 — get public IP
 aws ec2 describe-instances \
   --filters "Name=tag:Name,Values=devops-demo-server" \
   --query "Reservations[*].Instances[*].PublicIpAddress"
