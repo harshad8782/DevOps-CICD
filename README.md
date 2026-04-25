@@ -1,21 +1,136 @@
 # 🚀 DevOps CI/CD Pipeline Demo
 
-> A complete end-to-end **DevOps CI/CD pipeline** built with Spring Boot, Docker, GitHub Actions, and Jenkins — demonstrating automated build, containerization, deployment workflows, production-grade log analysis, code quality gates, security scanning, and email alerting.
+> A complete end-to-end **DevOps CI/CD pipeline** built with Spring Boot, Docker, GitHub Actions, Terraform, and AWS — demonstrating automated build, containerization, cloud infrastructure provisioning, deployment workflows, production-grade log analysis, code quality gates, security scanning, and email alerting.
 
 ---
 
-## 📌 Project Architecture
+## 📌 Evolution — From Local to Cloud
+
+This project went through two major architectural phases. Both are documented here to show the real-world progression of a DevOps pipeline.
+
+---
+
+### 🔵 Phase 1 — Original Architecture (Local Jenkins + Docker Hub)
+
 ```
-Developer → GitHub Push → GitHub Actions (CI) → Maven Build → Test → Quality Gate → Security Scan → Docker Image → Docker Hub
-                                                                                                                         ↓
-                                                                                                                 Jenkins (CD)
-                                                                                                                         ↓
-                                                                              Clone → Pull Image → Run Container → Health Check
-                                                                                                                         ↓
-                                                                                                               Log Analysis
-                                                                                                                         ↓
-                                                                                          ✅ Pass → Verify & Alert Email
-                                                                                          🔴 Fail → Rollback + Email + Stats Report
+Developer → GitHub Push
+                ↓
+        GitHub Actions (CI)
+                ↓
+    Maven Build → JUnit Tests → JaCoCo Coverage
+                ↓
+    SonarCloud Quality Gate → Trivy Security Scan
+                ↓
+    Docker Build → Push to Docker Hub
+                ↓
+        Jenkins (CD) — Local / Self-Hosted
+                ↓
+    Clone Repo → Pull Image from Docker Hub
+                ↓
+    Run Container → Health Check (retry 5x)
+                ↓
+    Log Analysis (Bash / PowerShell via isUnix())
+                ↓
+    ✅ Pass  → Verify & Email Alert + Stats Report
+    🔴 Fail  → Auto Rollback + Email Alert + Stats Report
+```
+
+**What was used:**
+
+| Tool | Role |
+|------|------|
+| GitHub Actions | CI only — build, test, quality, push |
+| Jenkins (local) | CD only — deploy, health check, log analysis |
+| Docker Hub | Image registry |
+| Bash / PowerShell | Log analysis with OS detection via `isUnix()` |
+| Email (SMTP via Jenkins) | Pipeline alerts with stats report attached |
+
+**Limitations of Phase 1:**
+- Jenkins had to be running locally at all times
+- No cloud infrastructure — everything was `localhost`
+- Docker Hub used instead of a private cloud registry
+- Manual Jenkins setup and configuration required
+- No infrastructure-as-code — server setup was manual
+
+---
+
+### 🟠 Phase 2 — Current Architecture (GitHub Actions + Terraform + AWS)
+
+```
+Developer → GitHub Push to main
+                ↓
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+              ci.yml — GitHub Actions CI
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Checkout → Maven Build → JUnit Tests
+                ↓
+    JaCoCo Coverage Report (uploaded as artifact)
+                ↓
+    SonarCloud Quality Gate
+                ↓
+    Configure AWS → Login to ECR
+                ↓
+    Docker Build → Trivy Security Scan
+                ↓
+    Push versioned image to Amazon ECR
+    (e.g. devops-demo:v1.71.0 + devops-demo:latest)
+                ↓
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+         cd.yml — GitHub Actions CD
+         (triggers automatically on CI success)
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                ↓
+    JOB 1 — Terraform Provision Infrastructure
+                ↓
+    terraform init (S3 remote state backend)
+    terraform plan → terraform apply
+                ↓
+    AWS Resources Created / Updated:
+      ├── TLS Key Pair (RSA 4096) → .pem written to disk
+      ├── AWS Key Pair registered
+      ├── IAM Role + Instance Profile (ECR read access)
+      ├── Security Group (ports 22, 80, 8081)
+      ├── EC2 Instance (Ubuntu 24.04, userdata installs Docker + AWS CLI)
+      └── Elastic IP (stable public IP)
+                ↓
+    Extract EC2 IP + PEM key from Terraform outputs
+    (PEM base64-encoded → passed to deploy job securely)
+                ↓
+    Wait for EC2 SSH to open (port 22 check)
+                ↓
+    JOB 2 — Deploy → Health Check → Log Analysis → Email
+                ↓
+    Write PEM key to runner filesystem
+                ↓
+    Wait for Docker + AWS CLI ready on EC2
+    (polls every 15s, breaks as soon as both respond)
+                ↓
+    Fetch latest versioned image tag from ECR
+                ↓
+    SSH into EC2 → ECR login via IAM Role → docker pull
+                ↓
+    Save current container version → Stop old → Run new
+    (auto rollback if docker run fails)
+                ↓
+    Health Check — curl http://EC2_IP:8081
+    (retry 5 times × 10s — rollback on failure)
+                ↓
+    OS Detection (mirrors Jenkins isUnix() pattern):
+      uname = Linux/Darwin → log_analyzer.sh   ← always on GitHub runners
+      uname = Windows      → log_analyzer.ps1  ← self-hosted Windows runner
+                ↓
+    SCP log_analyzer.sh to EC2 → Run remotely
+                ↓
+    Scans last 500 lines of container logs
+      ├── exit 0 → ✅ SUCCESS  → email + stats.txt attached
+      ├── exit 2 → 🟡 UNSTABLE → email + stats.txt attached
+      └── exit 3 → 🔴 FAILURE  → deployment blocked + email + stats.txt
+                ↓
+    SCP stats report back to runner → Upload as artifact
+                ↓
+    Verify Deployment (docker ps + docker logs)
+                ↓
+    Cleanup PEM key from runner filesystem
 ```
 
 ---
@@ -32,80 +147,106 @@ Developer → GitHub Push → GitHub Actions (CI) → Maven Build → Test → Q
 | SonarCloud | Code quality gate |
 | Trivy | Docker image security scanning |
 | Docker | Containerization |
-| GitHub Actions | CI pipeline (cloud) |
-| Jenkins | CD pipeline (local/self-hosted) |
-| Docker Hub | Image registry |
-| Git | Version control |
-| Bash Scripting | Log analysis & DevOps automation (Linux) |
-| PowerShell | Log analysis & DevOps automation (Windows) |
-| Email (SMTP) | Pipeline alert notifications |
+| GitHub Actions | Full CI + CD pipeline (cloud) |
+| Terraform | Infrastructure as Code — provisions all AWS resources |
+| Amazon ECR | Private Docker image registry |
+| Amazon EC2 | Cloud server running the application |
+| Amazon S3 | Terraform remote state storage (versioned) |
+| AWS IAM | EC2 role with ECR read access |
+| Bash Scripting | Log analysis & DevOps automation |
+| PowerShell | Log analysis for Windows runners |
+| Email (SMTP / Gmail) | Pipeline alert notifications |
 
 ---
 
 ## 📂 Project Structure
+
 ```
 DevOps-CICD/
 ├── src/
-│   └── main/
-│       └── java/
-│           └── com/devops/devopsdemo/
-│               ├── DevopsdemoApplication.java
-│               └── HelloController.java
-│   └── test/
-│       └── java/
-│           └── com/devops/devopsdemo/
-│               └── DevopsdemoApplicationTests.java
-├── Dockerfile
-├── Jenkinsfile
-├── log_analyzer.sh          ← Linux/Mac agent
-├── log_analyzer.ps1         ← Windows agent
+│   └── main/java/com/devops/devopsdemo/
+│       ├── DevopsdemoApplication.java
+│       └── HelloController.java
+│   └── test/java/com/devops/devopsdemo/
+│       └── DevopsdemoApplicationTests.java
+├── terraform/
+│   ├── main.tf           ← EC2, IAM, Security Group, EIP, Key Pair
+│   ├── variables.tf      ← aws_region, instance_type, app_name
+│   ├── outputs.tf        ← ec2_public_ip, ssh_command, app_url
+│   └── userdata.sh       ← Installs Docker + AWS CLI on EC2 at boot
+├── .github/
+│   └── workflows/
+│       ├── ci.yml        ← Build, Test, Quality, Security, Push to ECR
+│       └── cd.yml        ← Terraform Infra + Deploy + Health Check + Email
+├── Dockerfile            ← Multi-stage build (295MB vs 676MB single-stage)
+├── log_analyzer.sh       ← Linux/Mac log analysis
+├── log_analyzer.ps1      ← Windows log analysis
 ├── pom.xml
-├── mvnw
-├── mvnw.cmd
-├── README.md
-└── .github/
-    └── workflows/
-        └── ci.yml
+└── README.md
+```
+
+---
+
+## ☁️ AWS Infrastructure (Terraform-Managed)
+
+All infrastructure is created and managed by Terraform. No manual AWS console setup required.
+
+```
+Amazon S3 (tfstate-bucket-harshad)
+    └── devops-demo/terraform.tfstate   ← Remote state, versioned
+
+Amazon ECR (devops-demo)
+    ├── devops-demo:latest
+    ├── devops-demo:v1.71.0
+    ├── devops-demo:v1.70.0
+    └── ...versioned history
+
+Amazon EC2 (devops-demo-server)
+    ├── AMI: Ubuntu 24.04 (ap-south-1)
+    ├── Instance type: t3.micro
+    ├── Security Group: ports 22, 80, 8081
+    ├── IAM Role: ECR read access (no hardcoded credentials)
+    ├── Elastic IP: stable public IP across reboots
+    └── userdata.sh: Docker + AWS CLI auto-installed at boot
+
+AWS Key Pair
+    └── devops-demo-keypair.pem (generated by Terraform, used by CD workflow)
 ```
 
 ---
 
 ## 🔍 Automated Log Analysis
 
-Two versions of the log analyzer are included — `log_analyzer.sh` for Linux/Mac Jenkins agents and `log_analyzer.ps1` for Windows Jenkins agents. Both scripts do exactly the same job, just written in their respective scripting languages. The Jenkins pipeline **automatically detects the OS** using `isUnix()` and runs the correct script without any manual changes.
+Two versions of the log analyzer are included — `log_analyzer.sh` for Linux/Mac and `log_analyzer.ps1` for Windows. Both do exactly the same job in their respective scripting languages.
 
-**Integrated with:**
-
-| Tool | Integration |
-|---|---|
-| **Docker** | Pulls logs directly from running container via `docker logs` |
-| **Jenkins** | `isUnix()` detects OS and runs `.sh` or `.ps1` automatically |
-| **Email** | Sends HTML alert with `.txt` stats report attached |
+The pipeline **automatically detects the OS** at runtime — mirroring the `isUnix()` pattern from Jenkins — and runs the correct script without any manual changes.
 
 **How it works:**
+
 ```
-Container starts
-      ↓
-Jenkins detects OS using isUnix()
-      ├── Linux/Mac → log_analyzer.sh
-      └── Windows   → log_analyzer.ps1
-      ↓
+Container starts on EC2
+        ↓
+GitHub Actions runner detects OS:
+    [ "$(uname)" = "Linux" ]  →  log_analyzer.sh   ✅ always on cloud runners
+    [ "$(uname)" = "Windows" ] → log_analyzer.ps1  ← self-hosted Windows runner
+        ↓
+SCP script to EC2 → Run remotely → SCP report back
+        ↓
 Fetches last 500 lines from docker logs
-      ↓
+        ↓
 Scans for ERROR, FATAL, CRITICAL, EXCEPTION  → threshold: 5
 Scans for WARN, WARNING, DEPRECATED          → threshold: 10
-      ↓
-      ├── All clean      → exit 0 → ✅ Jenkins SUCCESS  → email + stats.txt attached
-      ├── Warnings only  → exit 2 → 🟡 Jenkins UNSTABLE → email + stats.txt attached
-      └── Critical found → exit 3 → 🔴 Jenkins FAILURE  → deployment blocked
-                                                         → email + stats.txt attached
+        ↓
+        ├── All clean      → exit 0 → ✅ SUCCESS  → email + stats.txt
+        ├── Warnings only  → exit 2 → 🟡 UNSTABLE → email + stats.txt
+        └── Critical found → exit 3 → 🔴 FAILURE  → deployment blocked + email + stats.txt
 ```
 
 **Pipeline decision table:**
 
-| Result | Exit Code | Jenkins Status | Action Taken |
+| Result | Exit Code | Status | Action |
 |---|---|---|---|
-| No issues found | 0 | ✅ SUCCESS | Deployment proceeds, email + report sent |
+| No issues | 0 | ✅ SUCCESS | Deployment live, email + report sent |
 | Warnings > threshold | 2 | 🟡 UNSTABLE | Deploy allowed, team emailed with report |
 | Critical errors > threshold | 3 | 🔴 FAILURE | Deployment blocked, team emailed with report |
 
@@ -115,188 +256,40 @@ Scans for WARN, WARNING, DEPRECATED          → threshold: 10
 |---|---|---|
 | Variable | `VAR="value"` | `$VAR = "value"` |
 | Environment var | `${VAR:-default}` | `if ($env:VAR) { $env:VAR }` |
-| Function | `myFunc() { }` | `function My-Func { }` |
 | Pattern match | `grep -i -c "pattern"` | `Select-String -Pattern "pattern"` |
 | Write file | `echo "text" >> file` | `"text" \| Out-File -Append` |
-| Send email | `mail -s "subject"` | `Send-MailMessage` |
-| HTTP request | `curl -X POST` | `Invoke-RestMethod -Method POST` |
 | Exit code | `exit 3` | `exit 3` |
 
-**Jenkins auto-selects the script at runtime:**
+**OS detection — Jenkins vs GitHub Actions:**
+
 ```groovy
-script {
-    if (isUnix()) {
-        sh './log_analyzer.sh'
-    } else {
-        powershell '.\\log_analyzer.ps1'
-    }
+// Jenkins (Groovy)
+if (isUnix()) {
+    sh './log_analyzer.sh'
+} else {
+    powershell '.\\log_analyzer.ps1'
 }
 ```
 
-📸 **Success Email Received:**
-
-![Email Alert](screenshots/mail.png)
-
-📸 **Stats Report Attached to Email:**
-
-![Stats Report](screenshots/attachment.png)
-
-📸 **Critical Failure Email — Deployment Blocked:**
-
-![Fail Email](screenshots/fail_mail.png)
-
----
-
-## ⚙️ CI/CD Pipeline Workflow
-
-### Step 1 — Code Commit & Push
 ```bash
-git add .
-git commit -m "Automated Docker Pipeline"
-git push
+# GitHub Actions (Bash — equivalent logic)
+if [ "$(uname)" = "Linux" ] || [ "$(uname)" = "Darwin" ]; then
+    # run log_analyzer.sh
+else
+    # run log_analyzer.ps1
+fi
 ```
-
-📸 **Git Commit & Push:**
-
-![Git Commit](screenshots/git_commit.png)
-
----
-
-### Step 2 — GitHub Actions CI Triggers Automatically
-
-On every push to `main`, the full CI pipeline runs automatically:
-```
-Checkout → Build → Unit Tests → Code Coverage → SonarCloud → Docker Build → Trivy Scan → Push to Docker Hub
-```
-
-📸 **GitHub Actions Pipeline:**
-
-![GitHub Actions](screenshots/github_actions.png)
-
----
-
-### Step 3 — Unit Tests — JUnit
-
-Every push runs all JUnit tests automatically. Build is blocked if any test fails.
-```
-✅ contextLoads
-✅ testHelloEndpoint
-```
-
----
-
-### Step 4 — Code Coverage — JaCoCo
-
-JaCoCo generates a full coverage report after tests run. Report is uploaded as a GitHub Actions artifact.
-
-📸 **JaCoCo Coverage Report:**
-
-![JaCoCo](screenshots/jacoco.png)
-```
-Coverage    : 46%
-Lines       : 5 total, 3 covered
-Methods     : 4 total, 2 covered
-Classes     : 2 total, 2 covered
-```
-
----
-
-### Step 5 — Code Quality Gate — SonarCloud
-
-Every push is automatically scanned by SonarCloud for bugs, vulnerabilities, code smells, and coverage.
-
-📸 **SonarCloud Dashboard:**
-
-![SonarCloud](screenshots/sonarqube.png)
-```
-Quality Gate    : ✅ Passed
-Security        : A
-Reliability     : A
-Maintainability : A
-Coverage        : 60%
-Duplications    : 0%
-Hotspots        : 100% Reviewed
-```
-
----
-
-### Step 6 — Security Scan — Trivy
-
-Docker image is scanned for CRITICAL and HIGH vulnerabilities before pushing to Docker Hub.
-
-📸 **Trivy Security Report:**
-
-![Trivy](screenshots/trivy_report.png)
-```
-Target             : harshad8782/devops-demo:latest (ubuntu 24.04)
-Vulnerabilities    : 0 ✅
-Secrets            : None detected ✅
-app.jar            : 0 vulnerabilities ✅
-```
-
----
-
-### Step 7 — Versioned Docker Image Pushed to Docker Hub
-
-Every build pushes two tags — versioned and latest:
-```bash
-docker push harshad8782/devops-demo:v1.42.0
-docker push harshad8782/devops-demo:latest
-```
-
-📸 **Docker Hub Repository:**
-
-![Docker Hub](screenshots/docker_hub_repo.png)
-
----
-
-### Step 8 — Jenkins CD Pipeline Triggered
-
-Jenkins clones the repository, pulls the latest verified image from Docker Hub, deploys the container with auto rollback, runs a health check, runs log analysis, and sends an email notification.
-
-**Jenkins Pipeline Stages:**
-- ✅ Clone Repository
-- ✅ Pull Image from Docker Hub
-- ✅ Run Container with Auto Rollback
-- ✅ Health Check
-- ✅ Log Analysis (Bash or PowerShell)
-- ✅ Verify Deployment
-- ✅ Email Notification with Stats Report Attached
-
-📸 **Jenkins Pipeline — All Stages Green:**
-
-![Jenkins Pipeline](screenshots/jenkins.png)
-
----
-
-### Step 9 — Auto Rollback on Failure
-
-Before deploying, Jenkins saves the current running image version. If deployment fails or health check fails after 5 retries, Jenkins automatically restarts the previous version.
-```
-Save current version
-      ↓
-Deploy new version
-      ↓
-Health Check — retry 5 times
-      ├── ✅ Healthy → proceed
-      └── ❌ Failed  → auto rollback to previous version
-```
-
----
-
-### Step 10 — Log Analysis Runs Automatically
-
-After the container passes health check, the log analyzer runs, writes a timestamped `.txt` stats report, and controls the pipeline outcome via exit codes.
 
 **Sample stats report:**
+
 ```
 ====================================================
   LOG ANALYSIS STATS REPORT
 ====================================================
-Generated     : 2026-03-18 11:03:17
+Generated     : 2026-04-24 20:20:40
 Container     : devops-app
-Jenkins Job   : DevOps-CD
-Build Number  : #21
+Jenkins Job   : CD — Terraform Infra + Deploy to EC2
+Build Number  : #17
 Lines Scanned : 500
 ====================================================
 
@@ -325,20 +318,128 @@ Action          : All checks passed. Deployment is proceeding.
 
 ---
 
-### Step 11 — Application Live in Browser
-```
-http://localhost:8081
+## ⚙️ CI/CD Pipeline Workflow
+
+### Step 1 — Code Commit & Push
+
+```bash
+git add .
+git commit -m "Feature update"
+git push origin main
 ```
 
-📸 **Application Live:**
+---
 
-![Browser Output](screenshots/browser_output.png)
+### Step 2 — CI Pipeline Triggers (ci.yml)
+
+On every push to `main`, the full CI pipeline runs automatically in GitHub Actions:
+
+```
+Checkout → Maven Build → JUnit Tests → JaCoCo Coverage
+    → SonarCloud Quality Gate → ECR Login → Docker Build
+    → Trivy Security Scan → Push to ECR
+```
+
+**Unit Tests — JUnit:**
+```
+✅ contextLoads
+✅ testHelloEndpoint
+```
+
+**Code Coverage — JaCoCo:**
+```
+Coverage    : 46%
+Lines       : 5 total, 3 covered
+Methods     : 4 total, 2 covered
+Classes     : 2 total, 2 covered
+```
+
+**Code Quality — SonarCloud:**
+```
+Quality Gate    : ✅ Passed
+Security        : A
+Reliability     : A
+Maintainability : A
+Coverage        : 60%
+Duplications    : 0%
+Hotspots        : 100% Reviewed
+```
+
+**Security Scan — Trivy:**
+```
+Target             : devops-demo:latest (ubuntu 24.04)
+Vulnerabilities    : 0 ✅
+Secrets            : None detected ✅
+app.jar            : 0 vulnerabilities ✅
+```
+
+**Versioned image pushed to ECR:**
+```bash
+devops-demo:v1.71.0   ← versioned tag
+devops-demo:latest    ← always points to newest
+```
+
+---
+
+### Step 3 — CD Pipeline Triggers Automatically (cd.yml)
+
+Triggered by `workflow_run` on CI success — no manual steps needed.
+
+**Job 1 — Terraform Provision Infrastructure:**
+- `terraform init` with S3 remote backend (`tfstate-bucket-harshad`)
+- Cleans up any stale IAM resources from previous runs
+- `terraform plan` → `terraform apply`
+- Extracts EC2 public IP + PEM key from outputs
+- Waits for SSH port to open
+
+**Job 2 — Deploy → Health Check → Log Analysis → Email:**
+- Writes PEM key securely to runner (`chmod 400`)
+- Polls EC2 until Docker and AWS CLI are both ready
+- Fetches latest versioned image tag from ECR
+- SSH into EC2 → ECR login via IAM role → `docker pull`
+- Saves current version → stops old container → starts new
+- Auto rollback if `docker run` fails
+- Health check: `curl http://EC2_IP:8081` — 5 retries × 10s
+- Auto rollback if health check fails
+- Runs log analysis remotely on EC2 (via SCP + SSH)
+- Copies stats report back to runner
+- Uploads stats report as GitHub Actions artifact (14 day retention)
+- Sends email alert with stats report attached
+- Cleans up PEM key from runner
+
+---
+
+### Step 4 — Auto Rollback on Failure
+
+```
+Save current container image version
+        ↓
+Deploy new version
+        ↓
+Health Check — retry 5 times × 10s
+        ├── ✅ Healthy → proceed to log analysis
+        └── ❌ Failed  → auto rollback to previous image
+                ↓
+Log Analysis
+        ├── exit 0 → ✅ proceed
+        ├── exit 2 → 🟡 proceed with warning email
+        └── exit 3 → 🔴 deployment blocked
+```
+
+---
+
+### Step 5 — Application Live on EC2
+
+```
+http://<EC2_ELASTIC_IP>:8081
+```
 
 > ✅ **"DevOps CI/CD Pipeline Working!"**
 
 ---
 
 ## 🐳 Dockerfile — Multi-Stage Build
+
 ```dockerfile
 # Stage 1 — Build
 FROM maven:3.9.9-eclipse-temurin-17 AS builder
@@ -353,534 +454,181 @@ WORKDIR /app
 COPY --from=builder /app/target/*.jar app.jar
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
+
 ```
-Old single-stage image   →  676MB
-New multi-stage image    →  295MB
-Reduction                →  56% smaller ✅
+Single-stage image  →  676 MB
+Multi-stage image   →  295 MB
+Reduction           →  56% smaller ✅
 ```
 
 ---
 
-## 🔄 GitHub Actions CI Pipeline
-```yaml
-name: DevOps CI Pipeline
+## 🔄 CI Pipeline — ci.yml
 
+```yaml
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      checks: write
-      pull-requests: write
-
-    steps:
-
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Build Maven Project
-        run: mvn clean package -DskipTests
-
-      - name: Run Unit Tests
-        run: mvn test
-
-      - name: Generate Coverage Report
-        run: mvn jacoco:report
-
-      - name: Check Coverage Threshold
-        run: mvn jacoco:check
-        continue-on-error: true
-
-      - name: Upload Coverage Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: jacoco-coverage-report
-          path: target/site/jacoco/
-          retention-days: 7
-
-      - name: SonarCloud Scan
-        run: mvn sonar:sonar -Dsonar.token=${{ secrets.SONAR_TOKEN }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-      - name: Publish Test Results
-        uses: dorny/test-reporter@v1
-        if: success() || failure()
-        with:
-          name: JUnit Test Results
-          path: target/surefire-reports/*.xml
-          reporter: java-junit
-          fail-on-error: false
-
-      - name: Login to DockerHub
-        run: echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
-
-      - name: Set Version Tag
-        run: echo "VERSION=v1.${{ github.run_number }}.0" >> $GITHUB_ENV
-
-      - name: Build Docker Image
-        run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/devops-demo:${{ env.VERSION }} .
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest .
-
-      - name: Trivy Security Scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest
-          format: table
-          exit-code: 0
-          severity: CRITICAL,HIGH
-          output: trivy-report.txt
-
-      - name: Upload Trivy Report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: trivy-security-report
-          path: trivy-report.txt
-          retention-days: 7
-
-      - name: Push Docker Image
-        run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/devops-demo:${{ env.VERSION }}
-          docker push ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest
-
-      - name: Print Version Info
-        run: |
-          echo "✅ Image pushed successfully"
-          echo "📦 Version  : ${{ env.VERSION }}"
-          echo "📦 Latest   : ${{ secrets.DOCKER_USERNAME }}/devops-demo:latest"
+# Steps:
+# Checkout → Java 17 → Maven Build → JUnit Tests
+# → JaCoCo Report → SonarCloud → AWS Credentials
+# → ECR Login → Set Version Tag → Docker Build
+# → Trivy Scan → Push to ECR (versioned + latest)
 ```
+
+Full file: `.github/workflows/ci.yml`
 
 ---
 
-## 🏗️ Jenkins CD Pipeline
-```groovy
-pipeline {
-    agent any
+## 🏗️ CD Pipeline — cd.yml
 
-    environment {
-        DOCKER_IMAGE   = 'harshad8782/devops-demo:latest'
-        CONTAINER_NAME = 'devops-app'
-        APP_PORT       = '8081'
-        CONTAINER_PORT = '8080'
-        ALERT_EMAIL    = 'harshadraurale29@gmail.com'
-    }
+```yaml
+on:
+  workflow_run:
+    workflows: ["CI — Build, Test, Quality, Push to ECR"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:  # manual trigger also supported
 
-    stages {
-
-        stage('Clone Repository') {
-            steps {
-                echo '📥 Cloning repository...'
-                git branch: 'main',
-                    url: 'https://github.com/harshad8782/DevOps-CICD.git'
-            }
-        }
-
-        stage('Pull Image') {
-            steps {
-                echo '📥 Pulling latest image from Docker Hub...'
-                sh 'docker pull ${DOCKER_IMAGE}'
-            }
-        }
-
-        stage('Run Container') {
-            steps {
-                echo '🚀 Deploying container...'
-                script {
-                    def currentVersion = sh(
-                        script: "docker inspect ${CONTAINER_NAME} --format='{{.Config.Image}}' 2>/dev/null || echo 'none'",
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Current running version: ${currentVersion}"
-
-                    try {
-                        sh 'docker stop ${CONTAINER_NAME} || true'
-                        sh 'docker rm ${CONTAINER_NAME} || true'
-                        sh """
-                            docker run -d \
-                                --name ${CONTAINER_NAME} \
-                                -p ${APP_PORT}:${CONTAINER_PORT} \
-                                --restart unless-stopped \
-                                ${DOCKER_IMAGE}
-                        """
-                        echo "✅ New container started successfully"
-                    } catch (Exception e) {
-                        echo "❌ Deployment failed — rolling back to ${currentVersion}"
-                        sh "docker stop ${CONTAINER_NAME} || true"
-                        sh "docker rm ${CONTAINER_NAME} || true"
-                        if (currentVersion != 'none') {
-                            sh """
-                                docker run -d \
-                                    --name ${CONTAINER_NAME} \
-                                    -p ${APP_PORT}:${CONTAINER_PORT} \
-                                    --restart unless-stopped \
-                                    ${currentVersion}
-                            """
-                            echo "✅ Rolled back to ${currentVersion}"
-                        }
-                        error "Deployment failed and rolled back to ${currentVersion}"
-                    }
-                }
-                sh 'sleep 10'
-            }
-        }
-
-        stage('Health Check') {
-            steps {
-                echo '🏥 Running health check...'
-                script {
-                    def containerIP = sh(
-                        script: "docker inspect ${CONTAINER_NAME} --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'",
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Container IP: ${containerIP}"
-
-                    def maxRetries = 5
-                    def count = 0
-                    def healthy = false
-
-                    while (count < maxRetries && !healthy) {
-                        try {
-                            sh "curl -sf http://${containerIP}:${CONTAINER_PORT} > /dev/null"
-                            healthy = true
-                            echo "✅ App is healthy at http://${containerIP}:${CONTAINER_PORT}"
-                        } catch (Exception e) {
-                            count++
-                            echo "⏳ Waiting for app... attempt ${count}/${maxRetries}"
-                            sleep 5
-                        }
-                    }
-
-                    if (!healthy) {
-                        echo "❌ Health check failed — rolling back..."
-                        sh 'docker stop ${CONTAINER_NAME} || true'
-                        sh 'docker rm ${CONTAINER_NAME} || true'
-                        error "Health check failed — deployment rolled back"
-                    }
-                }
-            }
-        }
-
-        stage('Log Analysis') {
-            steps {
-                echo '🔍 Running log analysis on container...'
-                script {
-                    if (isUnix()) {
-                        echo '🐧 Linux agent — running log_analyzer.sh'
-                        sh 'chmod +x log_analyzer.sh'
-                        sh """
-                            export CONTAINER_NAME=${CONTAINER_NAME}
-                            export ALERT_EMAIL=${ALERT_EMAIL}
-                            export WORKSPACE=${WORKSPACE}
-                            export BUILD_URL=${BUILD_URL}
-                            export JOB_NAME=${JOB_NAME}
-                            export BUILD_NUMBER=${BUILD_NUMBER}
-                            ./log_analyzer.sh
-                        """
-                    } else {
-                        echo '🪟 Windows agent — running log_analyzer.ps1'
-                        powershell """
-                            \$env:CONTAINER_NAME  = '${CONTAINER_NAME}'
-                            \$env:ALERT_EMAIL     = '${ALERT_EMAIL}'
-                            \$env:WORKSPACE       = '${WORKSPACE}'
-                            \$env:BUILD_URL       = '${BUILD_URL}'
-                            \$env:JOB_NAME        = '${JOB_NAME}'
-                            \$env:BUILD_NUMBER    = '${BUILD_NUMBER}'
-                            .\\log_analyzer.ps1
-                        """
-                    }
-                }
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                echo '✅ Verifying deployment...'
-                script {
-                    if (isUnix()) {
-                        sh 'docker ps | grep ${CONTAINER_NAME}'
-                        sh 'docker logs ${CONTAINER_NAME} --tail=20'
-                        sh 'ls -lh ${WORKSPACE}/reports/ || echo "No reports directory found"'
-                    } else {
-                        powershell 'docker ps | Select-String "${env:CONTAINER_NAME}"'
-                        powershell 'docker logs ${env:CONTAINER_NAME} --tail 20'
-                        powershell 'Get-ChildItem "${env:WORKSPACE}\\reports" -ErrorAction SilentlyContinue | Format-List'
-                    }
-                }
-            }
-        }
-    }
-
-    post {
-        success {
-            echo '''
-            ✅ ================================
-               PIPELINE SUCCEEDED!
-               App running at: http://localhost:8081
-            ================================
-            '''
-            emailext(
-                subject: "✅ [SUCCESS] Pipeline Passed — ${JOB_NAME} #${BUILD_NUMBER}",
-                body: """
-                    <h2>✅ Pipeline Succeeded</h2>
-                    <table>
-                        <tr><td><b>Job</b></td><td>${JOB_NAME}</td></tr>
-                        <tr><td><b>Build</b></td><td>#${BUILD_NUMBER}</td></tr>
-                        <tr><td><b>Container</b></td><td>${CONTAINER_NAME}</td></tr>
-                        <tr><td><b>App URL</b></td><td>http://localhost:${APP_PORT}</td></tr>
-                        <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
-                    </table>
-                    <p>✅ Health check passed. Log analysis passed. Deployment is live.</p>
-                    <p>See attached stats report for full analysis details.</p>
-                """,
-                to: "${ALERT_EMAIL}",
-                mimeType: 'text/html',
-                attachmentsPattern: '**/reports/log_stats_*.txt'
-            )
-        }
-
-        unstable {
-            echo '''
-            🟡 ================================
-               PIPELINE UNSTABLE!
-               Warnings found — check email.
-            ================================
-            '''
-            emailext(
-                subject: "🟡 [WARNING] Pipeline Unstable — ${JOB_NAME} #${BUILD_NUMBER}",
-                body: """
-                    <h2>🟡 Pipeline Unstable — Warnings Found</h2>
-                    <table>
-                        <tr><td><b>Job</b></td><td>${JOB_NAME}</td></tr>
-                        <tr><td><b>Build</b></td><td>#${BUILD_NUMBER}</td></tr>
-                        <tr><td><b>Container</b></td><td>${CONTAINER_NAME}</td></tr>
-                        <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
-                    </table>
-                    <p>🟡 Warning patterns exceeded threshold. Deployment allowed but review needed.</p>
-                    <p>See attached stats report for full details.</p>
-                """,
-                to: "${ALERT_EMAIL}",
-                mimeType: 'text/html',
-                attachmentsPattern: '**/reports/log_stats_*.txt'
-            )
-        }
-
-        failure {
-            echo '''
-            ❌ ================================
-               PIPELINE FAILED!
-               Check logs above for errors.
-            ================================
-            '''
-            emailext(
-                subject: "🔴 [CRITICAL] Pipeline FAILED — ${JOB_NAME} #${BUILD_NUMBER}",
-                body: """
-                    <h2>🔴 Pipeline Failed — Deployment Blocked</h2>
-                    <table>
-                        <tr><td><b>Job</b></td><td>${JOB_NAME}</td></tr>
-                        <tr><td><b>Build</b></td><td>#${BUILD_NUMBER}</td></tr>
-                        <tr><td><b>Container</b></td><td>${CONTAINER_NAME}</td></tr>
-                        <tr><td><b>Build URL</b></td><td><a href="${BUILD_URL}">${BUILD_URL}</a></td></tr>
-                    </table>
-                    <p>🔴 Pipeline failed. Automatic rollback triggered.</p>
-                    <p>Fix errors and re-trigger the pipeline.</p>
-                    <p>See attached stats report for full details.</p>
-                """,
-                to: "${ALERT_EMAIL}",
-                mimeType: 'text/html',
-                attachmentsPattern: '**/reports/log_stats_*.txt'
-            )
-        }
-
-        always {
-            script {
-                if (isUnix()) {
-                    sh 'docker image prune -f'
-                } else {
-                    powershell 'docker image prune -f'
-                }
-            }
-        }
-    }
-}
+jobs:
+  terraform:   # Provision / update AWS infrastructure
+  deploy:      # SSH deploy + health check + log analysis + email
 ```
 
-> **Cross-Platform Support** — The pipeline uses `isUnix()` to automatically detect the Jenkins agent OS at runtime.
-> ```
-> Linux / Mac agent  →  isUnix() = true  →  runs log_analyzer.sh
-> Windows agent      →  isUnix() = false →  runs log_analyzer.ps1
-> ```
+Full file: `.github/workflows/cd.yml`
 
 ---
 
 ## 💡 CI vs CD — Why Separated?
 
-| | GitHub Actions (CI) | Jenkins (CD) |
+| | ci.yml (CI) | cd.yml (CD) |
 |---|---|---|
-| **Trigger** | Every git push | After image pushed to Hub |
-| **Responsibility** | Build, test, quality, security, push | Clone, pull, deploy, health check, analyze, verify |
-| **Runs on** | GitHub cloud runners | Local/self-hosted server |
-| **Output** | Verified Docker image on Docker Hub | Running container + email alert |
+| **Trigger** | Every `git push` to main | After CI succeeds |
+| **Responsibility** | Build, test, quality, security, push image | Infra provisioning, deploy, verify, alert |
+| **Runs on** | GitHub cloud runners | GitHub cloud runners |
+| **Registry** | Pushes to Amazon ECR | Pulls from Amazon ECR |
+| **Output** | Verified versioned Docker image | Running container on EC2 + email |
 
 > Separating CI and CD is a real-world best practice — deploy only what has been built, tested, and verified.
 
 ---
 
-## 🏭 Production-Grade CI/CD Pipeline
+## 🔐 GitHub Secrets Required
+
+| Secret | Description |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | IAM user access key |
+| `AWS_SECRET_ACCESS_KEY` | IAM user secret key |
+| `AWS_REGION` | `ap-south-1` |
+| `AWS_ACCOUNT_ID` | 12-digit AWS account ID |
+| `ECR_REPOSITORY` | ECR repository name (`devops-demo`) |
+| `TF_STATE_BUCKET` | S3 bucket for Terraform state (`tfstate-bucket-harshad`) |
+| `SONAR_TOKEN` | SonarCloud project token |
+| `SMTP_USERNAME` | Gmail address for sending alerts |
+| `SMTP_PASSWORD` | Gmail App Password |
+| `ALERT_EMAIL` | Email address to receive pipeline alerts |
 
 ---
 
-### 🔵 Production CI — Continuous Integration
+## 🏭 Production-Grade Pipeline Overview
+
+### CI — Continuous Integration
 ```
 Code Push
     ↓
-Build & Compile
+Build & Compile (Maven)                  ✅
     ↓
-Unit Tests          → JUnit ✅ (implemented)
+Unit Tests (JUnit)                       ✅
     ↓
-Code Coverage       → JaCoCo ✅ (implemented)
+Code Coverage (JaCoCo)                   ✅
     ↓
-Code Quality        → SonarCloud ✅ (implemented)
+Code Quality Gate (SonarCloud)           ✅  ──FAIL──→ ❌ Block
     ↓
-Security Scan       → Trivy ✅ (implemented)
+Security Scan (Trivy)                    ✅
     ↓
-Integration Tests   → Test API contracts, DB connections
+Build Versioned Image → ECR              ✅
     ↓
-Performance Tests   → JMeter, Gatling (load testing)
+Release Candidate Ready
+```
+
+### CD — Continuous Delivery
+```
+CI Success
     ↓
-Build Versioned Image → harshad8782/devops-demo:v1.42.0 ✅ (implemented)
+Terraform Apply (EC2 + ECR + S3 state)   ✅
     ↓
-Push to Registry    → Docker Hub ✅ (implemented)
+Wait for EC2 ready (Docker + AWS CLI)    ✅
     ↓
-Release Candidate Ready ✅
+SSH Deploy with Auto Rollback            ✅
+    ↓
+Health Check (retry 5x)                  ✅  ──FAIL──→ 🔴 Auto Rollback
+    ↓
+Log Analysis (Bash / PowerShell)         ✅  ──FAIL──→ 🔴 Block + Email
+    ↓
+Verify Deployment                        ✅
+    ↓
+Email + Stats Report Attached            ✅
+    ↓
+✅ Deployment complete
 ```
 
 ---
 
-### 🟠 Production CD — Continuous Delivery with Canary Deployment
-```
-Release Candidate approved by CI
-    ↓
-Deploy to Staging
-    ↓
-Health Check ✅ (implemented)
-    ↓
-Canary Release — 5% of users
-    ↓
-Monitor for 15–30 minutes
-    ├── OK  ──→ Roll out to 25% → 50% → 100% ✅
-    └── ERR ──→ 🔴 Auto Rollback ✅ (implemented)
-```
-
----
-
-### 🔁 Deployment Strategies Compared
+### 🔁 Deployment Strategies
 
 | Strategy | How it works | Risk | Use Case |
 |---|---|---|---|
-| **Recreate** | Stop old, start new | High — downtime | Dev/test environments |
+| **Recreate** | Stop old, start new | High — downtime | Dev/test |
 | **Rolling** | Replace instances one by one | Medium | Standard production |
-| **Blue/Green** | Run two identical envs, switch traffic | Low — instant rollback | High availability apps |
-| **Canary** | Release to small % first, then scale | Very Low | Large user base, critical apps |
-| **Feature Flags** | Code ships but feature toggled on/off per user | Minimal | A/B testing, gradual feature launches |
+| **Blue/Green** | Two identical envs, switch traffic | Low | High availability |
+| **Canary** | Release to small % first, then scale | Very Low | Large user base |
+| **Feature Flags** | Code ships, feature toggled per user | Minimal | A/B testing |
+
+> This project uses **Recreate** strategy with auto rollback — appropriate for single-instance demo. Production upgrade path: Canary on ECS/EKS.
 
 ---
 
-### 🔴 Rollback Strategy
-```bash
-docker stop devops-app
-docker rm devops-app
-docker run -d \
-    --name devops-app \
-    -p 8080:8080 \
-    harshad8782/devops-demo:v1.41.0
-```
-
----
-
-### 📊 Production Monitoring Stack
+### 📊 Production Monitoring Stack (Future)
 
 | Tool | Purpose |
 |---|---|
-| **Prometheus** | Collects metrics — CPU, memory, request rate, error rate |
-| **Grafana** | Visualizes metrics in dashboards |
-| **ELK Stack** | Centralized log collection and search |
-| **AWS CloudWatch** | Cloud-native monitoring for EC2, containers, Lambda |
-| **PagerDuty / OpsGenie** | Sends alerts to on-call engineers |
+| **Prometheus** | Metrics — CPU, memory, request rate, error rate |
+| **Grafana** | Dashboard visualisation |
+| **ELK Stack** | Centralised log collection and search |
+| **AWS CloudWatch** | Cloud-native monitoring for EC2 / containers |
+| **PagerDuty / OpsGenie** | On-call alerts to engineers |
 
 ---
 
-### 🏭 Full Production Pipeline at a Glance
-```
-Developer pushes code
-        ↓
-━━━━━━━━━━━━━━━━━━━━━━━━━━  CI — GitHub Actions  ━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Build → Unit Tests (JUnit) ✅
-        ↓
-    Code Coverage (JaCoCo) ✅
-        ↓
-    Code Quality Gate (SonarCloud) ──FAIL──→ ❌ Block
-        ↓
-    Security Scan (Trivy) ✅
-        ↓
-    Build versioned image → v1.42.0 ✅
-        ↓
-    Push to Docker Hub ✅
-        ↓
-━━━━━━━━━━━━━━━━━━━━━━━━━━  CD — Jenkins  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Clone → Pull versioned image
-        ↓
-    Deploy with Auto Rollback ✅
-        ↓
-    Health Check (retry 5x) ✅ ──FAIL──→ 🔴 Auto Rollback
-        ↓
-    Log Analysis (Bash/PowerShell) ✅ ──FAIL──→ 🔴 Block + Email
-        ↓
-    Verify Deployment ✅
-        ↓
-    Email + Stats Report ✅
-        ↓
-    ✅ Deployment complete
-```
+## 🔮 Feature Progress
 
----
-
-## 🔮 Future Enhancements
-
-- [x] Jenkins CI/CD pipeline integration ✅
+- [x] Maven build automation ✅
 - [x] Unit testing with JUnit ✅
 - [x] Code coverage with JaCoCo ✅
 - [x] Code quality gate with SonarCloud ✅
 - [x] Security scanning with Trivy ✅
 - [x] Versioned Docker image tags ✅
-- [x] Multi-stage Dockerfile (56% smaller image) ✅
+- [x] Multi-stage Dockerfile (56% smaller) ✅
+- [x] Private image registry — Amazon ECR ✅
+- [x] Infrastructure as Code — Terraform ✅
+- [x] Remote Terraform state — S3 + versioning ✅
+- [x] EC2 provisioning with Elastic IP ✅
+- [x] IAM Role for EC2 → ECR access (no hardcoded keys) ✅
 - [x] Auto rollback on deployment failure ✅
 - [x] Health check after deployment ✅
 - [x] Automated log analysis — Bash + PowerShell ✅
+- [x] OS detection (mirrors Jenkins `isUnix()`) ✅
 - [x] Stats report auto-generated and attached to email ✅
-- [ ] Infrastructure as Code with Terraform
+- [x] Full GitHub Actions CI + CD (Jenkins removed) ✅
+- [ ] Monitoring with Prometheus + Grafana
+- [ ] Kubernetes deployment with Helm charts
+- [ ] Multi-environment (staging → production)
 
 ---
 
 ## 🧪 Running Locally
+
 ```bash
 git clone https://github.com/harshad8782/DevOps-CICD.git
 cd DevOps-CICD
@@ -889,17 +637,33 @@ docker build -t devopsdemo .
 docker run -p 8081:8080 devopsdemo
 ```
 
-Open in browser: `http://localhost:8081`
+Open: `http://localhost:8081`
 
 ---
 
-## 📋 Useful Docker Commands
+## 📋 Useful Commands
+
 ```bash
-docker ps                                        # running containers
-docker images                                    # list images
-docker stop <container_id>                       # stop container
-docker rm <container_id>                         # remove container
-docker pull harshad8782/devops-demo:latest       # pull from Hub
+# Docker
+docker ps                                    # running containers
+docker logs devops-app --tail=50            # container logs
+docker stop devops-app && docker rm devops-app
+
+# Terraform (from terraform/ directory)
+terraform init
+terraform plan
+terraform apply
+terraform destroy                            # tear down all infra
+
+# AWS ECR
+aws ecr describe-images \
+  --repository-name devops-demo \
+  --region ap-south-1                        # list images
+
+# AWS EC2
+aws ec2 describe-instances \
+  --filters "Name=tag:Name,Values=devops-demo-server" \
+  --query "Reservations[*].Instances[*].PublicIpAddress"
 ```
 
 ---
