@@ -6,7 +6,7 @@ on:
     workflows: ["CI — Build, Test, Quality, Push to ECR"]
     types: [completed]
     branches: [main]
-
+  
   # Also allow manual trigger (e.g. re-deploy without a new push)
   workflow_dispatch:
 
@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2   # REQUIRED for git diff
 
       # ✅ NEW STEP — Detect Terraform changes
       - name: Detect Terraform Changes
@@ -39,10 +41,9 @@ jobs:
             exit 0
           fi
 
-          CHANGED=$(git diff --name-only \
-            ${{ github.event.workflow_run.head_sha }} \
-            ${{ github.event.workflow_run.base_sha }} \
-            | grep '^terraform/' || true)
+          git fetch --no-tags --prune --depth=2 origin main
+
+          CHANGED=$(git diff --name-only HEAD~1 HEAD | grep '^terraform/' || true)
 
           if [ -z "$CHANGED" ]; then
             echo "No Terraform changes"

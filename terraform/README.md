@@ -1,6 +1,6 @@
 # 🚀 DevOps CI/CD Pipeline
 
-> A complete end-to-end **DevOps CI/CD pipeline** built with Spring Boot, Docker, GitHub Actions, Terraform, and AWS — demonstrating automated build, containerization, cloud infrastructure provisioning, deployment workflows, production-grade log analysis( forr both linux and window), code quality gates, security scanning, and email alerting.
+> A complete end-to-end **DevOps CI/CD pipeline** built with Spring Boot, Docker, GitHub Actions, Terraform, and AWS — demonstrating automated build, containerization, cloud infrastructure provisioning, deployment workflows, production-grade log analysis, code quality gates, security scanning, and email alerting.
 
 ---
 
