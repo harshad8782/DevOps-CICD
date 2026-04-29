@@ -150,7 +150,7 @@ DevOps-CICD/
 
 ```bash
 git add .
-git commit -m "Add GitHub Actions CI/CD with Terraform"
+git commit -m "Final All Testing"
 git push origin main
 ```
 
@@ -244,7 +244,7 @@ app.jar            : 0 vulnerabilities ✅
 Every build pushes two tags — versioned and latest. ECR keeps a full history of all versions.
 
 ```bash
-devops-demo:v1.71.0   ← versioned tag (matches github.run_number)
+devops-demo:v1.105.0   ← versioned tag (matches github.run_number)
 devops-demo:latest    ← always points to newest
 ```
 
@@ -262,15 +262,11 @@ Before deploying, Terraform creates or updates all cloud infrastructure automati
 
 ![S3 tfstate Console](screenshots/s3_tfstate_console.png)
 
-📸 **S3 Versioning Enabled on State Bucket:**
-
-![S3 Versioning](screenshots/s3_tfstate_version.png)
-
 📸 **S3 Bucket — tfstate-bucket-harshad — devops-demo/ folder:**
 
 ![S3 Console](screenshots/s3_console.png)
 
-📸 **terraform.tfstate stored in S3 (31.9 KB):**
+📸 **terraform.tfstate stored in S3 (31.8 KB):**
 
 ![tfstate file](screenshots/s3_tfstate.png)
 
@@ -322,9 +318,9 @@ After Terraform finishes and EC2 is ready, the deploy job SSHs in using the Terr
 ![CD GitHub Actions](screenshots/cd_github_action.png)
 
 ```
-✅ Terraform — Provision Infrastructure   44s
-✅ Deploy → Health Check → Log Analysis   51s
-Total duration: 1m 42s
+✅ Terraform — Provision Infrastructure   1m 17s
+✅ Deploy → Health Check → Log Analysis   1m 48s  
+Total duration: 3m 05s
 ```
 
 **Jenkins Pipeline Stages (Phase 1 — for reference):**
