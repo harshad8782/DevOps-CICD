@@ -80,6 +80,37 @@ jobs:
           terraform_version: 1.7.0
           terraform_wrapper: false
 
+      # ─────────────────────────────────────────────────
+      # Ensure S3 bucket exists for Terraform state
+      # ─────────────────────────────────────────────────
+      - name: Ensure S3 Backend Bucket Exists
+        if: steps.tf_changes.outputs.run_tf == 'true'
+        run: |
+          BUCKET="${{ secrets.TF_STATE_BUCKET }}"
+          REGION="${{ secrets.AWS_REGION }}"
+
+          echo "🔍 Checking S3 bucket: $BUCKET"
+
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "✅ Bucket already exists"
+          else
+            echo "🚀 Creating S3 bucket..."
+          if [ "$REGION" = "us-east-1" ]; then
+            aws s3api create-bucket --bucket "$BUCKET"
+          else
+            aws s3api create-bucket \
+            --bucket "$BUCKET" \
+            --create-bucket-configuration LocationConstraint=$REGION
+          fi
+
+            echo "🔐 Enabling versioning..."
+            aws s3api put-bucket-versioning \
+            --bucket "$BUCKET" \
+            --versioning-configuration Status=Enabled
+
+            echo "✅ S3 bucket ready"
+          fi
+
       - name: Terraform Init
         if: steps.tf_changes.outputs.run_tf == 'true'
         working-directory: terraform

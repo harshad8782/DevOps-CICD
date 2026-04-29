@@ -91,15 +91,39 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
+
       # ─────────────────────────────────────────────────
-      # 8. Login to ECR
+      # 8. Ensure ECR Repository exists (create if missing)
+      # ─────────────────────────────────────────────────
+      - name: Ensure ECR Repository Exists
+        run: |
+          REPO="${{ secrets.ECR_REPOSITORY }}"
+          REGION="${{ secrets.AWS_REGION }}"
+
+          echo "🔍 Checking ECR repository: $REPO"
+
+          if aws ecr describe-repositories \
+            --repository-names "$REPO" \
+            --region "$REGION" >/dev/null 2>&1; then
+            echo "✅ ECR repository already exists"
+          else
+            echo "🚀 Creating ECR repository..."
+            aws ecr create-repository \
+            --repository-name "$REPO" \
+            --region "$REGION" \
+            --image-scanning-configuration scanOnPush=true
+            echo "✅ ECR repository created"
+          fi
+
+      # ─────────────────────────────────────────────────
+      # 9. Login to ECR
       # ─────────────────────────────────────────────────
       - name: Login to Amazon ECR
         id: ecr_login
         uses: aws-actions/amazon-ecr-login@v2
 
       # ─────────────────────────────────────────────────
-      # 9. Set versioned image tag
+      # 10. Set versioned image tag
       # ─────────────────────────────────────────────────
       - name: Set Version Tag
         id: version
@@ -112,7 +136,7 @@ jobs:
           echo "ECR_IMAGE=${ECR_IMAGE}" >> $GITHUB_ENV
 
       # ─────────────────────────────────────────────────
-      # 10. Build Docker Image (both versioned + latest)
+      # 11. Build Docker Image (both versioned + latest)
       # ─────────────────────────────────────────────────
       - name: Build Docker Image
         run: |
@@ -130,7 +154,7 @@ jobs:
           path: version.txt
 
       # ─────────────────────────────────────────────────
-      # 11. Security Scan — Trivy
+      # 12. Security Scan — Trivy
       # ─────────────────────────────────────────────────
       - name: Trivy Security Scan
         uses: aquasecurity/trivy-action@master
@@ -150,7 +174,7 @@ jobs:
           retention-days: 7
 
       # ─────────────────────────────────────────────────
-      # 12. Push to ECR
+      # 13. Push to ECR
       # ─────────────────────────────────────────────────
       - name: Push Docker Image to ECR
         run: |
